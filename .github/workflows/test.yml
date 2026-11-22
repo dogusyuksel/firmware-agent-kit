@@ -1,31 +1,43 @@
 name: test
 
+# Manual only (Actions tab -> "test" -> Run workflow) to save CI minutes. Pick what to run.
 on:
-  push:
-  pull_request:
   workflow_dispatch:
     inputs:
-      build_esp_idf_image:
-        description: "Also build the (large) esp-idf image"
+      unit:
+        description: "Unit tests (Linux + Windows, Python 3.12) and Python 3.8 minimum-version check"
+        type: boolean
+        default: true
+      example:
+        description: "Example project: Ceedling, traceability, analysis"
+        type: boolean
+        default: true
+      calibration:
+        description: "False-positive calibration on official RTOS examples (clones ~200 files)"
+        type: boolean
+        default: false
+      docker:
+        description: "Build arm-dev, renode, frama-c images and run their smoke tests (slow)"
+        type: boolean
+        default: false
+      esp_idf_image:
+        description: "Also build the large esp-idf image (very slow)"
         type: boolean
         default: false
 
 jobs:
   unit:
+    if: inputs.unit
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        python: ["3.8", "3.12"]
-        exclude:
-          - os: macos-latest
-            python: "3.8"
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python }}
+          python-version: "3.12"
       - name: Install ARM toolchain and poppler (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi poppler-utils
@@ -34,16 +46,26 @@ jobs:
       - name: Validate JSON manifests
         run: python -c "import json;[json.load(open(p)) for p in ('.claude-plugin/plugin.json','.claude-plugin/marketplace.json','hooks/hooks.json','templates/firmware.json')]"
 
+  min-python:
+    # Python 3.8 is gone from setup-python on current runners; test the documented minimum in a container.
+    if: inputs.unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests on Python 3.8
+        run: docker run --rm -v "$PWD:/work" -w /work python:3.8-slim sh -c "apt-get update -qq && apt-get install -y -qq git >/dev/null && git config --global --add safe.directory /work && python -m unittest discover -s tests"
+
   example-ceedling:
+    if: inputs.example
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install Ceedling
+      - name: Install Ceedling and cppcheck
         run: |
-          sudo apt-get update && sudo apt-get install -y ruby gcc
+          sudo apt-get update && sudo apt-get install -y ruby gcc cppcheck
           sudo gem install --no-document ceedling -v 1.0.1
       - name: Unit tests of the example (validates the Ceedling template)
         working-directory: examples/sensor-node
@@ -52,10 +74,10 @@ jobs:
         working-directory: examples/sensor-node
         run: |
           python ../../tools/trace_check.py --reqs docs/requirements.csv
-          sudo apt-get install -y cppcheck
           python ../../tools/fw_analyze.py --all --tools lint,cppcheck --sarif analysis.sarif
 
   calibration:
+    if: inputs.calibration
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -66,6 +88,7 @@ jobs:
         run: python tests/calibrate_corpus.py --dir "${{ runner.temp }}/corpus"
 
   docker:
+    if: inputs.docker
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -90,7 +113,7 @@ jobs:
         run: docker run --rm fwkit/frama-c:ci frama-c -version
 
   docker-esp-idf:
-    if: github.event_name == 'workflow_dispatch' && inputs.build_esp_idf_image
+    if: inputs.esp_idf_image
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

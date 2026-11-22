@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2 - 2026-11-22
+- CI is manual-only (workflow_dispatch) with per-job switches to save minutes; Python 3.8 minimum is tested in a python:3.8-slim container (setup-python no longer ships 3.8 for Ubuntu 26.04 runners).
+- renode image: Ubuntu 22.04 + Renode 1.16.0 (the .deb depends on policykit-1 and pre-t64 libraries that Ubuntu 24.04 removed/renamed).
+
 ## 0.3.1 - 2026-11-22
 - Field-report fixes: application structs with `.on_*` members are no longer treated as ESP-IDF ISR callbacks (only `*_event_callbacks_t`/`*_cbs_t` driver structs); `extern portMUX_TYPE` declarations are not flagged as uninitialised; ISR data protected by a spinlock/critical section is not flagged as missing `volatile`; `strcpy`/`strcat` after a `strlen` check of the source is not flagged.
 - `fwkit-ignore <RULE-ID>` suppression comments for reviewed false positives.
