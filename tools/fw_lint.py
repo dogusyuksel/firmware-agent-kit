@@ -47,9 +47,9 @@ def _file_scope_nonvolatile_vars(code):
     return names
 
 
-def lint_source(src, cfg):
+def lint_source(src, cfg, extra_isr=None):
     lcfg = cfg.get("lint", {})
-    cf = CFile(src, lcfg.get("isr_functions", []))
+    cf = CFile(src, lcfg.get("isr_functions", []), extra_isr)
     code = cf.code
     out = []
 
@@ -57,6 +57,8 @@ def lint_source(src, cfg):
         out.append(Finding(rule, sev, cf.line(idx), cf.line(end_idx) if end_idx is not None else cf.line(idx), msg))
 
     for m in re.finditer(r"\bgets\s*\(", code):
+        if "gets" in cf.funcs and cf.funcs["gets"].start <= m.start() <= cf.funcs["gets"].body_start:
+            continue
         add("EMB-001", "error", m.start(), "gets() is unbounded - never use it.")
     for m in re.finditer(r"\b(strcpy|strcat|sprintf|vsprintf)\s*\(", code):
         add("EMB-002", "warn", m.start(), "{}() is unbounded; use the n-variant with an explicit size.".format(m.group(1)))
@@ -111,13 +113,13 @@ def lint_source(src, cfg):
     return out
 
 
-def lint_file(path, cfg, changed="git", rtos=True, rtos_cfg=None):
+def lint_file(path, cfg, changed="git", rtos=True, rtos_cfg=None, extra_isr=None):
     """Return (new, preexisting) findings incl. RTOS rules. changed: 'git' | None (all) | set of lines."""
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         src = f.read()
-    findings = lint_source(src, cfg)
+    findings = lint_source(src, cfg, extra_isr)
     if rtos:
-        findings += rtos_check.check_source(src, cfg, rtos_cfg)
+        findings += rtos_check.check_source(src, cfg, rtos_cfg, extra_isr)
     if changed == "git":
         changed = git_changed_lines(path)
     findings.sort(key=lambda x: (x.sev != "error", x.line))

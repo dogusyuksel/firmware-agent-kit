@@ -44,6 +44,7 @@ Then, in your firmware project:
 
 The session-start hook injects a short set of working rules in firmware repos:
 
+- **Plan first.** For non-trivial changes (several files, ISR/RTOS/clock/linker/bootloader work), Claude shows a short plan (`/fw-plan`) and waits for approval.
 - **Minimal diffs.** Claude changes only what was asked, with the fewest lines. Other problems it notices are listed under "Noticed (not changed)" and never fixed unasked.
 - **Match the project's style.** It follows the existing code's naming, error handling and formatting, using `style_probe.py` instead of reading dozens of files. New projects use the kit conventions.
 - **Thread-safe public APIs.** Every public function documents whether it is ISR-safe.
@@ -59,10 +60,11 @@ The session-start hook injects a short set of working rules in firmware repos:
 |---|---|
 | Targets | `stm32`, `esp32`, `samv71` |
 | RTOS | `freertos` (FreeRTOS + CMSIS-RTOS2 + ESP-IDF SMP rules) |
-| Code | `embedded-c`, `peripheral-driver`, `isr-concurrency`, `portable-architecture`, `linker-startup`, `low-power` |
+| Code | `embedded-c`, `peripheral-driver`, `isr-concurrency`, `portable-architecture`, `linker-startup`, `low-power`, `bootloader` |
+| Change management | `restructure` (safe refactoring), `safety-critical` (ECSS/DO-178C-style evidence, traceability, MC/DC, FDIR, SEU) |
 | Build & tools | `build-systems`, `static-analysis`, `containers`, `memory-footprint`, `flash-debug` |
 | Testing | `host-unit-test` (Ceedling), `renode-integration` (Renode/QEMU) |
-| Debug & docs | `hardfault-debug`, `hardware-docs` (datasheets, schematics), `mermaid-diagrams`, `board-bringup` |
+| Debug & docs | `hardfault-debug`, `timing-analysis`, `hardware-docs` (datasheets, schematics), `mermaid-diagrams`, `board-bringup` |
 
 ### Agents
 | Agent | Purpose |
@@ -77,6 +79,9 @@ The session-start hook injects a short set of working rules in firmware repos:
 | Command | Does |
 |---|---|
 | `/fw-init` | detect project facts, write config, offer templates |
+| `/fw-plan` | reviewable plan before any non-trivial change |
+| `/fw-restructure` | approved refactor, step by step with tests and size checks |
+| `/fw-trace` | requirements traceability matrix (`@req` / `@verifies`) |
 | `/fw-doctor` | tool inventory and OSS install offers |
 | `/fw-build` | build and triage errors |
 | `/fw-flash` | build and flash |
@@ -114,6 +119,10 @@ The session-start hook injects a short set of working rules in firmware repos:
 - ESP spinlocks and stack-size units are correct.
 - Public functions are thread-safe.
 
+Checks run per file in the edit hook. `--project` mode adds cross-file ISR reachability (a helper in another file called from an ISR is checked as ISR code) plus config, NVIC priority and heap-scheme rules.
+
+The rules are calibrated against official FreeRTOS, ESP-IDF and STM32Cube example code, about 200 files, with zero error-level findings (`tests/calibrate_corpus.py`).
+
 The full catalogue, with sources and the review-only checklist, is in [docs/RTOS_RULES.md](docs/RTOS_RULES.md).
 
 ### Containers
@@ -125,6 +134,10 @@ The full catalogue, with sources and the review-only checklist, is in [docs/RTOS
 - `frama-c`.
 
 `tools/fw_container.py` builds them and runs commands inside them with your project mounted. It works with Podman or Docker Engine.
+
+### Example and evals
+- `examples/sensor-node`: a portable ring buffer, frame parser and thread-safe service, with an OSAL over FreeRTOS, Ceedling tests and requirement tags. It demonstrates the recommended patterns and is checked in CI.
+- `evals/`: `claude plugin eval .` scenarios (ISR rules, ESP32 SMP, SAMV71 watchdog, minimal diff, RDP2 safety, plan first). Each scenario runs with and without the plugin to measure what the kit adds.
 
 ## Project configuration
 `.claude/firmware.json` in your firmware repo. See [templates/firmware.json](templates/firmware.json); every key is optional. The main groups:
@@ -142,6 +155,7 @@ python tools/rtos_check.py --project
 python tools/build_info.py --file src/uart.c
 python tools/pdf_search.py RM0440.pdf "USART_BRR"
 python tools/style_probe.py src/
+python tools/trace_check.py --reqs docs/requirements.csv --matrix trace.csv
 python tools/fw_container.py run arm-dev -- ceedling test:all
 python skills/hardfault-debug/scripts/decode_fault.py --cfsr 0x8200 --bfar 0x20030000
 python skills/memory-footprint/scripts/map_analyzer.py old.map new.map

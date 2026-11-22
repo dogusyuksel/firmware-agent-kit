@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0 - 2026-11-22
+- Plan-first working rule and `/fw-plan`; `restructure` skill and `/fw-restructure` for approved refactors.
+- `safety-critical` skill (ECSS/DO-178C-style evidence, MISRA deviations, MC/DC via GCC `-fcondition-coverage`, FDIR, SEU mitigation) and `tools/trace_check.py` + `/fw-trace` for requirements traceability.
+- `bootloader` and `timing-analysis` skills.
+- Cross-file ISR reachability in project mode (cached for the edit hook); FreeRTOSConfig.h location cached so hooks stay fast.
+- RTOS rules calibrated on ~200 official FreeRTOS/ESP-IDF/STM32Cube example files: zero error-level findings; false-positive patterns frozen as regression tests; `tests/calibrate_corpus.py`.
+- `examples/sensor-node` reference project (OSAL, thread-safe API, Ceedling tests, requirement tags).
+- `evals/` plugin eval scenarios; CI now runs the example with Ceedling, corpus calibration and Docker image builds.
+
 ## 0.2.0 - 2026-11-22
 - Targets: new `stm32`, `esp32`, `samv71` skills; `freertos` skill covering FreeRTOS, CMSIS-RTOS2 and ESP-IDF SMP.
 - RTOS checker (`tools/rtos_check.py`, ~60 RTOS-xxx rules, per-file and project-level) with a sourced catalogue in `docs/RTOS_RULES.md`; ISR context propagates through helpers, HAL callbacks and ESP handlers.

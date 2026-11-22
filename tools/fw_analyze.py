@@ -68,10 +68,10 @@ def flags_for(files, db):
     return incs, defs
 
 
-def run_lint(files, cfg, rc):
+def run_lint(files, cfg, rc, extra_isr=None):
     items = []
     for f in files:
-        new, _ = fw_lint.lint_file(f, cfg, None, rtos=True, rtos_cfg=rc)
+        new, _ = fw_lint.lint_file(f, cfg, None, rtos=True, rtos_cfg=rc, extra_isr=extra_isr)
         items += [Item("lint", f, x.line, x.sev, x.rule, x.msg) for x in new if x.sev != "info"]
     return items
 
@@ -206,10 +206,15 @@ def main():
     cc = find_compile_commands(proj, cfg)
     db = load_db(cc)
     rc_vals, _ = rtos_check.load_rtos_config(proj, cfg)
+    if args.all:
+        isr_map = rtos_check.global_isr_map(proj, cfg, rtos_check.project_sources(proj, cfg))
+        rtos_check._store(proj, "isr_funcs", isr_map)
+    else:
+        isr_map = rtos_check.cached_isr_map(proj)
 
     items, notes = [], []
     runners = {
-        "lint": lambda: run_lint(files, cfg, rc_vals),
+        "lint": lambda: run_lint(files, cfg, rc_vals, isr_map),
         "rtos": lambda: run_rtos_project(proj, cfg),
         "cppcheck": lambda: run_cppcheck(srcs, db, cfg, misra) if srcs else [],
         "clang-tidy": lambda: run_clang_tidy(srcs, cc, cfg) if srcs else [],

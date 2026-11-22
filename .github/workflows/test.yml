@@ -3,9 +3,15 @@ name: test
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      build_esp_idf_image:
+        description: "Also build the (large) esp-idf image"
+        type: boolean
+        default: false
 
 jobs:
-  test:
+  unit:
     strategy:
       fail-fast: false
       matrix:
@@ -20,10 +26,71 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - name: Install ARM toolchain (Linux)
+      - name: Install ARM toolchain and poppler (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi
+        run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi poppler-utils
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Validate JSON manifests
         run: python -c "import json;[json.load(open(p)) for p in ('.claude-plugin/plugin.json','.claude-plugin/marketplace.json','hooks/hooks.json','templates/firmware.json')]"
+
+  example-ceedling:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Ceedling
+        run: |
+          sudo apt-get update && sudo apt-get install -y ruby gcc
+          sudo gem install --no-document ceedling -v 1.0.1
+      - name: Unit tests of the example (validates the Ceedling template)
+        working-directory: examples/sensor-node
+        run: ceedling test:all
+      - name: Traceability and analysis of the example
+        working-directory: examples/sensor-node
+        run: |
+          python ../../tools/trace_check.py --reqs docs/requirements.csv
+          sudo apt-get install -y cppcheck
+          python ../../tools/fw_analyze.py --all --tools lint,cppcheck --sarif analysis.sarif
+
+  calibration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: No error-level findings on official FreeRTOS / ESP-IDF / STM32Cube examples
+        run: python tests/calibrate_corpus.py --dir "${{ runner.temp }}/corpus"
+
+  docker:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [arm-dev, renode, frama-c]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ${{ matrix.image }}
+        run: docker build -t fwkit/${{ matrix.image }}:ci -f docker/${{ matrix.image }}/Dockerfile docker/${{ matrix.image }}
+      - name: Smoke test arm-dev (Ceedling example + toolchain)
+        if: matrix.image == 'arm-dev'
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work/examples/sensor-node fwkit/arm-dev:ci ceedling test:all
+          docker run --rm fwkit/arm-dev:ci bash -lc "arm-none-eabi-gcc --version && cppcheck --version && clang-tidy --version && openocd --version"
+      - name: Smoke test renode
+        if: matrix.image == 'renode'
+        run: docker run --rm fwkit/renode:ci bash -lc "renode --version && renode-test --help | head -5"
+      - name: Smoke test frama-c
+        if: matrix.image == 'frama-c'
+        run: docker run --rm fwkit/frama-c:ci frama-c -version
+
+  docker-esp-idf:
+    if: github.event_name == 'workflow_dispatch' && inputs.build_esp_idf_image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t fwkit/esp-idf:ci -f docker/esp-idf/Dockerfile docker/esp-idf
+      - run: docker run --rm fwkit/esp-idf:ci bash -lc "idf.py --version && cppcheck --version"

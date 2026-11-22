@@ -83,8 +83,14 @@ TASK_END_RE = re.compile(r"\bvTaskDelete\s*\(|\bosThreadExit\s*\(")
 BLOCKING_ANY = tuple(TIMEOUT_ARG) + ALWAYS_BLOCKING + ("vTaskSuspend",)
 
 
+ZERO_MACROS = set()
+ZERO_DEF_RE = re.compile(r"^\s*#\s*define\s+(\w+)\s+\(?\s*(?:\(\s*(?:TickType_t|uint32_t|BaseType_t)\s*\)\s*)?0+[uUlL]*\s*\)?\s*(?://.*|/\*.*)?$", re.M)
+
+
 def is_zero(arg):
-    return arg.strip().rstrip("uUlL") in ("0", "0x0", "(TickType_t)0", "( TickType_t ) 0", "NULL")
+    a = re.sub(r"\s+", "", arg.strip())
+    a = re.sub(r"^\((TickType_t|uint32_t|BaseType_t)\)", "", a).strip("()").rstrip("uUlL")
+    return a in ("0", "0x0", "NULL") or a in ZERO_MACROS or bool(re.match(r"^\w*(DONT_BLOCK|NO_BLOCK|NO_WAIT|DONT_WAIT)$", a))
 
 
 def is_forever(arg):
@@ -109,9 +115,11 @@ def discarded(code, idx):
 
 
 # ------------------------------------------------------------------ per-file rules
-def check_source(src, cfg, rtos_cfg=None):
-    cf = CFile(src, (cfg.get("lint") or {}).get("isr_functions", []))
+def check_source(src, cfg, rtos_cfg=None, extra_isr=None):
+    cf = CFile(src, (cfg.get("lint") or {}).get("isr_functions", []), extra_isr)
     code = cf.code
+    ZERO_MACROS.clear()
+    ZERO_MACROS.update(ZERO_DEF_RE.findall(src))
     out = []
     rtos_cfg = rtos_cfg or {}
 
@@ -125,12 +133,22 @@ def check_source(src, cfg, rtos_cfg=None):
 
     # handle kinds: name -> (kind, creating function name)
     kinds = {}
+    scoped = {}
     for m in re.finditer(r"([\w\.\->\[\]]+)\s*=\s*(?:\(\s*\w+\s*\*?\s*\)\s*)?(" + "|".join(CREATE_KIND) + r")\s*\(", code):
         f = cf.func_at(m.start())
-        kinds[m.group(1)] = (CREATE_KIND[m.group(2)], f.name if f else None, m)
+        name = m.group(1)
+        local = f is not None and re.search(r"\b\w+\s+\*?\s*" + re.escape(name) + r"\s*(=|;)", cf.body(f)) is not None
+        entry = (CREATE_KIND[m.group(2)], f.name if f else None, m)
+        if local:
+            scoped[(f.name, name)] = entry
+        else:
+            kinds[name] = entry
 
-    def kind(arg):
+    def kind(arg, at=None):
         a = arg.strip().lstrip("&").strip()
+        f = cf.func_at(at) if at is not None else None
+        if f is not None and (f.name, a) in scoped:
+            return scoped[(f.name, a)][0]
         return kinds.get(a, (None,))[0]
 
     # ---------- ISR context
@@ -148,7 +166,7 @@ def check_source(src, cfg, rtos_cfg=None):
         for api, at, paren in calls(body, ["xSemaphoreGiveFromISR", "xSemaphoreTakeFromISR", "xSemaphoreGive",
                                            "xSemaphoreTake", "osMutexAcquire", "osMutexRelease"]):
             args, _ = call_args(body, paren)
-            if api.startswith("osMutex") or (args and kind(args[0]) in ("mutex", "recursive")):
+            if api.startswith("osMutex") or (args and kind(args[0], b0 + at) in ("mutex", "recursive")):
                 add("RTOS-014", "error", b0 + at, "Mutex used in {} '{}' - mutexes (priority inheritance) are task-only. "
                     "Use a binary semaphore or task notification from ISRs.".format(why, name))
         for api, at, paren in calls(body, ["osMessageQueuePut", "osMessageQueueGet", "osSemaphoreAcquire", "osMemoryPoolAlloc"]):
@@ -157,10 +175,17 @@ def check_source(src, cfg, rtos_cfg=None):
             if len(args) > i and not is_zero(args[i]):
                 add("RTOS-108", "error", b0 + at, "{}() from ISR '{}' needs timeout 0 (CMSIS-RTOS2 returns osErrorParameter "
                     "otherwise).".format(api, name))
-        woken = re.search(r"FromISR\s*\([^;]*&\s*(\w+)", body)
-        if woken:
-            var = woken.group(1)
-            if "ISR-reachable" not in why and not re.search(r"\b(portYIELD_FROM_ISR|portEND_SWITCHING_ISR)\s*\(", body):
+        var = None
+        for api, at, paren in calls(body, [n for n in set(re.findall(r"\b(\w+FromISR)\s*\(", body))]):
+            a, _ = call_args(body, paren)
+            if a and re.match(r"^&\s*\w+$", a[-1]):
+                var = a[-1].lstrip("&").strip()
+                break
+        if var:
+            returned = re.search(r"\breturn\b[^;]*\b" + re.escape(var) + r"\b", body) or \
+                re.search(r"\*\s*\w+\s*=[^;=]*\b" + re.escape(var) + r"\b", body)
+            if "ISR-reachable" not in why and name != "vApplicationTickHook" and not returned and \
+                    not re.search(r"\b(portYIELD_FROM_ISR|portEND_SWITCHING_ISR)\s*\(", body):
                 add("RTOS-016", "warn", b0, "'{}' collects xHigherPriorityTaskWoken but never calls portYIELD_FROM_ISR() - "
                     "the woken task runs only at the next tick.".format(name), f.body_end)
             decl = re.search(r"\bBaseType_t\s+" + re.escape(var) + r"\s*(=\s*([^;]+))?;", body)
@@ -202,6 +227,7 @@ def check_source(src, cfg, rtos_cfg=None):
                         r"for|while|" + "|".join(re.escape(a) for a in CONTEXT_SWITCHING) + r")\b\s*(\()?")
     for f in cf.funcs.values():
         b0, body = f.body_start, cf.body(f)
+        lock_wrapper = re.search(r"lock|acquire|take|enter|begin", f.name, re.I) is not None
         crit = susp = irq = 0
         held = {}       # handle -> take idx
         pending = []    # (activate_after_idx, handle, idx)
@@ -231,7 +257,7 @@ def check_source(src, cfg, rtos_cfg=None):
                     add("RTOS-044", "error", b0 + at, "return inside a critical section in '{}' - interrupts stay masked.".format(f.name))
                 if susp:
                     add("RTOS-049", "error", b0 + at, "return while the scheduler is suspended in '{}' (missing xTaskResumeAll).".format(f.name))
-                for h, ti in held.items():
+                for h, ti in ({} if lock_wrapper else held).items():
                     add("RTOS-029", "error", b0 + at, "return in '{}' while still holding '{}' (taken at L{}) - "
                         "the mutex is never released on this path.".format(f.name, h, cf.line(b0 + ti)))
             elif t in ("for", "while"):
@@ -241,15 +267,15 @@ def check_source(src, cfg, rtos_cfg=None):
             elif m.group(2):
                 args, close = call_args(body, m.end() - 1)
                 if t in ("xSemaphoreTake", "xSemaphoreTakeRecursive", "osMutexAcquire") and args:
-                    h = args[0].lstrip("&").strip()
-                    k = kind(h)
+                    h = re.sub(r"^\(\s*\w+\s*\*?\s*\)\s*", "", args[0].lstrip("&").strip())
+                    k = kind(h, b0 + at)
                     if t == "xSemaphoreTake" and k == "recursive":
                         add("RTOS-030", "error", b0 + at, "'{}' is a recursive mutex - use xSemaphoreTakeRecursive().".format(h))
                     if t == "xSemaphoreTakeRecursive" and k in ("mutex", "binary", "counting"):
                         add("RTOS-030", "error", b0 + at, "'{}' is not a recursive mutex - use xSemaphoreTake().".format(h))
                     lockish = k in ("mutex", "recursive", "osmutex") or (k is None and re.search(r"mutex|mtx|lock", h, re.I))
                     if lockish:
-                        if h in held and t == "xSemaphoreTake" and k != "recursive":
+                        if h in held and t == "xSemaphoreTake" and k != "recursive" and not (len(args) > 1 and is_zero(args[1])):
                             add("RTOS-055", "error", b0 + at, "'{}' taken twice in '{}' without a give - a non-recursive mutex "
                                 "self-deadlocks.".format(h, f.name))
                         pre = body[max(0, at - 40):at]
@@ -271,8 +297,8 @@ def check_source(src, cfg, rtos_cfg=None):
                         add("RTOS-027", "warn", b0 + at, "Binary semaphore '{}' is used as a lock (take..give in '{}') - "
                             "use a mutex for priority inheritance.".format(h, f.name))
                 elif t in ("xSemaphoreGive", "xSemaphoreGiveRecursive", "osMutexRelease") and args:
-                    h = args[0].lstrip("&").strip()
-                    if t == "xSemaphoreGive" and kind(h) == "recursive":
+                    h = re.sub(r"^\(\s*\w+\s*\*?\s*\)\s*", "", args[0].lstrip("&").strip())
+                    if t == "xSemaphoreGive" and kind(h, b0 + at) == "recursive":
                         add("RTOS-030", "error", b0 + at, "'{}' is a recursive mutex - use xSemaphoreGiveRecursive().".format(h))
                     held.pop(h, None)
                     pending[:] = [p for p in pending if p[1] != h]
@@ -291,6 +317,8 @@ def check_source(src, cfg, rtos_cfg=None):
             add("RTOS-049", "error", f.start, "vTaskSuspendAll() without matching xTaskResumeAll() in '{}'.".format(f.name), f.body_end)
         if held and not re.search(r"lock|acquire|take|enter|begin", f.name, re.I):
             for h, ti in held.items():
+                if re.search(r"\b(vSemaphoreDelete|osMutexDelete)\s*\(\s*" + re.escape(h) + r"\b", body):
+                    continue
                 add("RTOS-029", "warn", b0 + ti, "'{}' taken in '{}' but never given in this function.".format(h, f.name))
 
     # ---------- tasks
@@ -314,7 +342,11 @@ def check_source(src, cfg, rtos_cfg=None):
                         reach.add(c)
                         stack.append(c)
             texts = [lbody] + [cf.body(cf.funcs[c]) for c in reach if c != name]
-            if not any(any(True for _ in calls(t, list(BLOCKING_ANY))) for t in texts):
+            prio_idle = re.search(r"\b(?:xTaskCreate\w*|osThreadNew)\s*\(\s*\(?\s*(?:\w+\s*\)\s*)?&?" + re.escape(name) +
+                                  r"\b[^;]*\b(tskIDLE_PRIORITY\s*[,)]|osPriorityIdle)", code)
+            driver_wait = re.search(r"pdMS_TO_TICKS|portMAX_DELAY|osWaitForever|portTICK_(PERIOD|RATE)_MS|"
+                                    r"\b\w*(_read|_receive|_recv|_wait|_take|Read|Receive|Wait)\w*\s*\(", lbody)
+            if not prio_idle and not driver_wait and not any(any(True for _ in calls(t, list(BLOCKING_ANY))) for t in texts):
                 add("RTOS-070", "warn", f.body_start + max(lb, 0), "Task '{}' loop never blocks (no delay/wait/take/receive) - "
                     "it starves lower-priority tasks and the idle task (which frees deleted-task memory; ESP-IDF task "
                     "watchdog fires). Ignore if it blocks inside another module.".format(name))
@@ -331,7 +363,7 @@ def check_source(src, cfg, rtos_cfg=None):
         p_idx, s_idx, pr_idx = (1, None, None) if api == "osThreadNew" else (3, 2, 4)
         if s_idx is not None and len(args) > s_idx and re.match(r"^\d+$", args[s_idx]):
             n = int(args[s_idx])
-            if cf.is_esp and n < 1536:
+            if cf.is_esp and n < 1024:
                 add("RTOS-009", "warn", m.start(), "Stack {} for '{}': ESP-IDF stack depth is in BYTES - {} B is very small "
                     "(typical >= 2048; printf/ESP_LOG need more).".format(n, args[0], n))
             elif not cf.is_esp and n < 64:
@@ -344,7 +376,7 @@ def check_source(src, cfg, rtos_cfg=None):
             pm = re.match(r"^(?:tskIDLE_PRIORITY\s*\+\s*)?\(?\s*(\d+)\s*\)?$", args[pr_idx])
             if pm and int(pm.group(1)) >= maxp:
                 add("RTOS-010", "error", m.start(), "Priority {} >= configMAX_PRIORITIES ({}) for '{}'.".format(pm.group(1), maxp, args[0]))
-        if caller and len(args) > p_idx:
+        if caller and len(args) > p_idx and not FOREVER_RE.search(cf.body(caller)) and caller.name not in cf.tasks:
             pa = args[p_idx].strip()
             vm = re.match(r"^\(?\s*(?:\(\s*void\s*\*\s*\)\s*)?&?\s*(\w+)\s*\)?$", pa)
             if vm and pa.lstrip("( void*)").startswith("&") or (vm and re.search(r"\b\w+\s+" + re.escape(vm.group(1)) + r"\s*\[", cf.body(caller))):
@@ -395,6 +427,10 @@ def check_source(src, cfg, rtos_cfg=None):
                 add("RTOS-059", "error", m.end() + again.start(), "'{}' freed twice in '{}' without reassignment (double free).".format(ptr, f.name))
     for m in re.finditer(r"^[ \t]*(?!static\b)((?:const\s+)?(" + "|".join(STATIC_TYPES) + r"))\s+(\w+)", code, re.M):
         f = cf.func_at(m.start())
+        if f and (FOREVER_RE.search(cf.body(f)) or re.search(
+                r"\b(vSemaphoreDelete|vQueueDelete|vTaskDelete|xTimerDelete|vEventGroupDelete|vStreamBufferDelete|"
+                r"vMessageBufferDelete)\s*\(", cf.body(f))):
+            continue
         if f:
             add("RTOS-113", "error", m.start(), "{} '{}' is a local in '{}' - static-allocation buffers must outlive the "
                 "object: make it static or global.".format(m.group(2), m.group(3), f.name))
@@ -447,10 +483,12 @@ def check_source(src, cfg, rtos_cfg=None):
                          r"vTaskSuspendAll|atomic_\w+|__atomic_\w+|__sync_\w+|\w*[Ll]ock\w*|\w*CRITICAL\w*|\w*[Mm]utex\w*)\s*\(")
     special = set(cf.isr) | set(cf.tasks) | set(cf.timer_cbs) | {"main", "app_main"}
     for f in cf.funcs.values():
-        if "static" in f.prefix.split() or f.name in special or re.search(r"init|setup|deinit|create|test|reset", f.name, re.I):
+        if "static" in f.prefix.split() or f.name in special or \
+                re.search(r"init|setup|deinit|create|test|reset|register|attach|bind", f.name, re.I):
             continue
         body = cf.body(f)
-        if lock_rx.search(body):
+        if lock_rx.search(body) or re.search(r"\b(xTaskCreate\w*|osThreadNew|x\w+Create\w*|os\w+New)\s*\(", body) or \
+                re.match(r"^(v?[Ss]tart|[Rr]egister)", f.name):
             continue
         for v in file_vars:
             w = re.search(r"(?<![\w.>])" + re.escape(v) + r"\s*(\[[^\]]*\]|\.\w+|->\w+)*\s*(\+\+|--|[-+*/|&^]?=(?!=))|(\+\+|--)\s*"
@@ -588,9 +626,65 @@ def eval_int(expr, defs, depth=0):
         return None
 
 
+CACHE_REL = os.path.join(".claude", "fwkit-cache.json")
+CACHE_TTL_S = 24 * 3600
+
+
+def _cache(proj, key, compute):
+    """Tiny per-project cache (.claude/fwkit-cache.json) so hooks do not rescan the tree on every edit."""
+    import json
+    import time
+    path = os.path.join(proj, CACHE_REL)
+    data = {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        pass
+    ent = data.get(key)
+    v = ent.get("v") if ent else None
+    if ent and time.time() - ent.get("t", 0) < CACHE_TTL_S and (not isinstance(v, str) or not v or os.path.exists(os.path.join(proj, v))):
+        return v
+    if compute is None:
+        return None
+    val = compute()
+    data[key] = {"v": val, "t": time.time()}
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except OSError:
+        pass
+    return val
+
+
+def _store(proj, key, value):
+    import json
+    import time
+    path = os.path.join(proj, CACHE_REL)
+    data = {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        pass
+    data[key] = {"v": value, "t": time.time()}
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except OSError:
+        pass
+
+
 def load_rtos_config(proj, cfg):
     path = (cfg.get("rtos") or {}).get("config_header")
-    path = os.path.join(proj, path) if path else next(find_files(proj, names={"FreeRTOSConfig.h"}), None)
+    if path:
+        path = os.path.join(proj, path)
+    else:
+        found = _cache(proj, "freertos_config", lambda: next(
+            (rel(p, proj) for p in find_files(proj, names={"FreeRTOSConfig.h"})), ""))
+        path = os.path.join(proj, found) if found else None
     if not path or not os.path.isfile(path):
         return {}, None
     with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -768,10 +862,45 @@ def check_project(proj, cfg, sources):
     return out, rc
 
 
+def global_isr_map(proj, cfg, sources):
+    """Cross-file ISR reachability: non-static functions called (transitively) from any ISR in any file."""
+    owner, calls_all, roots = {}, {}, {}
+    pats = (cfg.get("lint") or {}).get("isr_functions", [])
+    for p in sources:
+        try:
+            with open(p, "r", encoding="utf-8", errors="replace") as f:
+                cf = CFile(f.read(), pats)
+        except OSError:
+            continue
+        for name, fn in cf.funcs.items():
+            calls_all[name] = calls_all.get(name, set()) | cf.calls_all.get(name, set())
+            if "static" not in fn.prefix.split():
+                owner.setdefault(name, p)
+        for name, why in cf.isr.items():
+            if "ISR-reachable" not in why:
+                roots[name] = why
+    out = {}
+    stack = [(r, r) for r in roots]
+    seen = set(roots)
+    while stack:
+        cur, root = stack.pop()
+        for c in calls_all.get(cur, ()):
+            if c in owner and c not in seen:
+                seen.add(c)
+                out[c] = "ISR-reachable function (via '{}', {})".format(root, rel(owner[c], proj))
+                stack.append((c, root))
+    return out
+
+
+def cached_isr_map(proj):
+    """Last cross-file ISR map written by --project / fw_analyze --all (None if never computed)."""
+    return _cache(proj, "isr_funcs", None)
+
+
 # ------------------------------------------------------------------ CLI
-def check_file(path, cfg, changed="git", rtos_cfg=None):
+def check_file(path, cfg, changed="git", rtos_cfg=None, extra_isr=None):
     with open(path, "r", encoding="utf-8", errors="replace") as f:
-        findings = check_source(f.read(), cfg, rtos_cfg)
+        findings = check_source(f.read(), cfg, rtos_cfg, extra_isr)
     if changed == "git":
         changed = git_changed_lines(path)
     return [x for x in findings if x.touches(changed)], [x for x in findings if not x.touches(changed)]
@@ -792,11 +921,16 @@ def main():
     cfg, _ = load_config(proj)
     rc, _ = load_rtos_config(proj, cfg)
     files = args.files or (project_sources(proj, cfg) if args.project else [])
+    if args.project:
+        extra = global_isr_map(proj, cfg, project_sources(proj, cfg))
+        _store(proj, "isr_funcs", extra)
+    else:
+        extra = cached_isr_map(proj)
     rcode = 0
     for p in files:
         if not p.lower().endswith(C_EXTS):
             continue
-        new, old = check_file(p, cfg, None if (args.all_lines or args.project) else "git", rc)
+        new, old = check_file(p, cfg, None if (args.all_lines or args.project) else "git", rc, extra)
         for f in new:
             if f.sev == "info" and not args.info:
                 continue

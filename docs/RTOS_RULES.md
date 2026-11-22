@@ -199,6 +199,16 @@ FR = https://www.freertos.org/Documentation/02-Kernel
 - `app_main` locals are not shared if `app_main` returns.
 - FPU is not used in ISRs unless `CONFIG_FREERTOS_FPU_IN_ISR` is set.
 
+## Calibration
+`tests/calibrate_corpus.py` runs all checkers on official example code: FreeRTOS `Demo/Common/Minimal` plus the STM32F407 and SAMV71 demos, ESP-IDF FreeRTOS and peripheral examples, and STM32CubeF4 FreeRTOS applications (about 200 files).
+
+Target: **zero error-level findings** on this corpus. Warnings that remain there are real findings or policy findings:
+- unchecked `xTaskCreate` / queue return values in demo code;
+- vendor `SystemInit` busy-waits without timeouts;
+- demo status functions that are not thread-safe.
+
+The false-positive patterns found during calibration are frozen in the `RTOS_FP_REGRESSION` test. Run the script after changing any rule.
+
 ## Related research
 - Chopra, Pai, D'Souza, "Data Races and Static Analysis for Interrupt-Driven Kernels", ESOP 2019 - https://link.springer.com/chapter/10.1007/978-3-030-17184-1_25
 - Tulsyan, Pai, D'Souza, "Static Race Detection for RTOS Applications", FSTTCS 2020 - https://arxiv.org/abs/2010.02642

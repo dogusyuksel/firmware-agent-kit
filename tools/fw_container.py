@@ -23,7 +23,7 @@ import sys
 
 KIT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOCKER_DIR = os.path.join(KIT_ROOT, "docker")
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 
 def images():

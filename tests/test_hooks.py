@@ -319,7 +319,97 @@ int main(void)
 """
 
 
+# Patterns from official FreeRTOS / ESP-IDF demo code that once produced false positives.
+RTOS_FP_REGRESSION = """\
+#include "FreeRTOS.h"
+#include "semphr.h"
+#define tstDONT_BLOCK ( ( TickType_t ) 0 )
+static QueueHandle_t xQueue;
+static SemaphoreHandle_t xISRMutex;
+
+static void prvTestQueueOverwriteFromISROnTwoQueues( void )   /* task context despite 'ISR' in the name */
+{
+    if( uxQueueMessagesWaiting( xQueue ) != 0 ) { error(); }
+}
+
+static void prvCreateAndDeleteStatic( void )                    /* object lives only inside this function */
+{
+    StaticSemaphore_t xBuffer;
+    SemaphoreHandle_t xSemaphore = xSemaphoreCreateMutexStatic( &xBuffer );
+    configASSERT( xSemaphore != NULL );
+    vSemaphoreDelete( xSemaphore );
+}
+
+static void prvOther( void )                                    /* same local name, different kind */
+{
+    SemaphoreHandle_t xSemaphore = xSemaphoreCreateRecursiveMutex();
+    configASSERT( xSemaphore );
+    (void)xSemaphoreTakeRecursive( xSemaphore, tstDONT_BLOCK );
+    (void)xSemaphoreGiveRecursive( xSemaphore );
+    vSemaphoreDelete( xSemaphore );
+}
+
+static void prvTakeTwiceNonBlocking( void )
+{
+    if( xSemaphoreTake( xISRMutex, 100 ) != pdPASS ) { return; }
+    if( xSemaphoreTake( xISRMutex, tstDONT_BLOCK ) != pdFAIL ) { error(); }   /* expected to fail, no deadlock */
+    xSemaphoreGive( xISRMutex );
+}
+
+static void IRAM_ATTR gpio_isr_handler( void *arg )
+{
+    uint32_t n = (uint32_t)arg;
+    xQueueSendFromISR( xQueue, &n, NULL );                      /* &n is the item, not 'woken' */
+}
+
+static bool IRAM_ATTR on_alarm_cb( void *ctx )
+{
+    BaseType_t high_task_awoken = pdFALSE;
+    xQueueSendFromISR( xQueue, &ctx, &high_task_awoken );
+    return high_task_awoken == pdTRUE;                          /* ESP-IDF drivers yield on return */
+}
+
+void vApplicationTickHook( void )
+{
+    BaseType_t xWoken = pdFALSE;
+    xSemaphoreGiveFromISR( xISRMutex2, &xWoken );               /* kernel switches after the tick hook */
+}
+
+static void prvSuspendedRead( void )
+{
+    uint32_t v;
+    vTaskSuspendAll();
+    xQueueReceive( xQueue, &v, tstDONT_BLOCK );
+    xTaskResumeAll();
+}
+
+static void prvTimerCb( TimerHandle_t t )
+{
+    (void)xTimerStop( t, tstDONT_BLOCK );
+}
+
+static void uart_task( void *arg )
+{
+    for( ;; ) { int n = uart_read_bytes( 1, buf, 64, pdMS_TO_TICKS( 20 ) ); handle( n ); }
+}
+
+static void echo_server( void *arg )
+{
+    QueueHandle_t xQueues[ 2 ];
+    (void)xTaskCreate( uart_task, "u", 256, xQueues, 1, NULL );   /* creator never returns */
+    for( ;; ) { vTaskDelay( 100 ); }
+}
+"""
+
+
 class RtosRules(Base):
+    def test_no_regression_false_positives(self):
+        import rtos_check
+        from fwlib import DEFAULT_CONFIG
+        bad = [str(f) for f in rtos_check.check_source(RTOS_FP_REGRESSION, DEFAULT_CONFIG, {})
+               if f.sev == "error" or f.rule in ("RTOS-016", "RTOS-070", "RTOS-062", "RTOS-113", "RTOS-030", "RTOS-055")]
+        self.assertEqual(bad, [])
+
     def rules(self, src, cfg=None):
         import rtos_check
         from fwlib import DEFAULT_CONFIG
@@ -481,6 +571,32 @@ class Tools(Base):
         self.assertIn("lower_snake", r.stdout)
         self.assertIn("uart_", r.stdout)
         self.assertIn("4 spaces", r.stdout)
+
+    def test_example_project_is_clean_and_traced(self):
+        src = os.path.join(ROOT, "examples", "sensor-node")
+        dst = os.path.join(self.proj, "sensor-node")
+        shutil.copytree(src, dst)
+        r = run_tool("fw_analyze.py", ["--all", "--tools", "lint"], dst)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("findings: none", r.stdout)
+        r = run_tool("trace_check.py", ["--reqs", "docs/requirements.csv"], dst)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("requirements: 7 | with code: 7 | with tests: 7", r.stdout)
+
+    def test_trace_gaps_reported(self):
+        self.write("docs/reqs.csv", "id,title\nREQ-1,a\nREQ-2,b\n")
+        self.write("src/a.c", "/* @req REQ-1 */\nvoid a(void) {}\n/* @req REQ-9 */\n")
+        self.write("test/test_a.c", "/* @verifies REQ-1 */\n")
+        r = run_tool("trace_check.py", ["--reqs", "docs/reqs.csv"], self.proj)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("NOT IMPLEMENTED (no @req tag) [1]: REQ-2", r.stdout)
+        self.assertIn("UNKNOWN IDs referenced in tags [1]: REQ-9", r.stdout)
+
+    def test_cross_file_isr_propagation(self):
+        self.write("src/isr.c", "void USART1_IRQHandler(void) { uart_on_byte(); }\n")
+        self.write("src/uart.c", "#include \"FreeRTOS.h\"\nvoid uart_on_byte(void) { xQueueSend(q, &b, 0); }\n")
+        r = run_tool("rtos_check.py", ["--project"], self.proj)
+        self.assertIn("uart.c:2: error: [RTOS-011]", r.stdout.replace("\\", "/"))
 
     def test_doctor_json(self):
         r = run_tool("fw_doctor.py", ["--json", "--for", "analysis"], self.proj)

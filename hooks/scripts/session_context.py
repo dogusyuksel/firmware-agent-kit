@@ -30,6 +30,7 @@ NOTES_MAX = 4000
 SKIP = {".git", "node_modules", ".venv", "venv", "build", "Debug", "Release", "out", "managed_components", ".pio"}
 
 RULES = """Working rules (firmware-agent-kit):
+- Non-trivial change (several files, new module, or anything touching ISRs, RTOS objects/priorities, clocks, linker script, bootloader, flash layout)? First present a short plan (files, steps, risks, how it will be verified - /fw-plan format) and wait for approval. One-line fixes need no plan.
 - Change only what was asked, with the fewest changed lines. No drive-by refactors, renames, reformatting, comment rewrites or include reordering.
 - Existing project: new code must look like the surrounding code (naming, formatting, error handling, comments, file layout) - run style_probe.py instead of reading many files. New project: use the kit conventions (embedded-c skill).
 - Public (non-static) functions must be thread-safe (mutex / critical section / single-owner task) and document whether they are ISR-safe.

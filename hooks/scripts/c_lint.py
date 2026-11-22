@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from fwlib import (git_changed_lines, is_protected, load_config, post_tool_context,  # noqa: E402
                    project_dir, read_input, rel)
 from fw_lint import lint_file  # noqa: E402
-from rtos_check import load_rtos_config  # noqa: E402
+from rtos_check import cached_isr_map, load_rtos_config  # noqa: E402
 from fwfmt import format_file  # noqa: E402
 
 MAX_NEW = 12
@@ -72,7 +72,7 @@ def main():
 
     try:
         rtos_cfg, _ = load_rtos_config(proj, cfg)
-        new, old = lint_file(path, cfg, lines, rtos_cfg=rtos_cfg)
+        new, old = lint_file(path, cfg, lines, rtos_cfg=rtos_cfg, extra_isr=cached_isr_map(proj))
         new = [f for f in new if f.sev != "info"]
         old = [f for f in old if f.sev != "info"]
     except Exception as e:

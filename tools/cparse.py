@@ -7,7 +7,7 @@ import re
 
 KEYWORDS = {"if", "for", "while", "switch", "return", "sizeof", "else", "do", "case", "defined", "_Static_assert"}
 FUNC_DEF_RE = re.compile(r"^[ \t]*((?:[A-Za-z_]\w*[ \t\*]+)+)(\w+)[ \t]*\(([^;{}]*?)\)\s*\{", re.M)
-ISR_NAME_RE = re.compile(r"(\w+_IRQHandler|\w+_Handler|\w+_isr|\w*ISR\w*|HAL_\w+Callback)$")
+ISR_NAME_RE = re.compile(r"^(?:\w+_IRQHandler|\w+_Handler|\w+_(?:isr|ISR|irq|IRQ)(?:_handler|_callback|_cb)?|(?:isr|ISR)_\w+|HAL_\w+Callback)$")
 NOT_ISR = {"Error_Handler", "Default_Handler", "Reset_Handler", "vApplicationStackOverflowHook",
            "vApplicationMallocFailedHook", "vApplicationIdleHook", "vApplicationDaemonTaskStartupHook"}
 ESP_ISR_REG_RE = re.compile(r"\b(?:gpio_isr_handler_add\s*\([^,;]+,|esp_intr_alloc(?:_intrstatus)?\s*\([^;]*?,\s*[^,;]*?,)\s*&?(\w+)\s*,")
@@ -110,8 +110,9 @@ class Func(object):
 
 
 class CFile(object):
-    def __init__(self, src, isr_patterns=()):
+    def __init__(self, src, isr_patterns=(), extra_isr=None):
         self.src = src
+        self.extra_isr = extra_isr or {}
         self.code = strip_comments_and_strings(src)
         self._nl = [0] + [i + 1 for i, ch in enumerate(self.code) if ch == "\n"]
         self.funcs = {}
@@ -122,10 +123,12 @@ class CFile(object):
             b = m.end() - 1
             self.funcs[name] = Func(name, m.start(), b, match_close(self.code, b), m.group(1), m.group(3))
         self.callees = {}
+        self.calls_all = {}
         ident = re.compile(r"(?<![\w.>])(\w+)\s*\(")
         for f in self.funcs.values():
-            body = self.body(f)
-            self.callees[f.name] = set(n for n in ident.findall(body) if n in self.funcs and n != f.name)
+            names = set(ident.findall(self.body(f))) - KEYWORDS
+            self.calls_all[f.name] = names
+            self.callees[f.name] = set(n for n in names if n in self.funcs and n != f.name)
         self.is_esp = bool(re.search(r'#\s*include\s*[<"](freertos/|esp_|driver/)', src))
         self.isr = self._isr_contexts(isr_patterns)
         self.tasks = self._created(TASK_CREATE_RE, 0)
@@ -163,7 +166,7 @@ class CFile(object):
                 continue
             if name == "vApplicationTickHook":
                 roots[name] = "tick hook (runs in the SysTick ISR)"
-            elif name == "ISR" or ISR_NAME_RE.match(name):
+            elif name == "ISR" or (ISR_NAME_RE.match(name) and "FromISR" not in name):
                 roots[name] = ("HAL callback (ISR context with _IT/_DMA APIs)" if name.startswith("HAL_")
                                else "interrupt handler")
             elif "IRAM_ATTR" in f.prefix:
@@ -174,6 +177,8 @@ class CFile(object):
                 roots[name] = "driver callback (ESP-IDF ISR context)"
             elif any(r.match(name) for r in extra):
                 roots[name] = "configured ISR function"
+            elif name in self.extra_isr and "static" not in f.prefix.split():
+                roots[name] = self.extra_isr[name]
         return self._propagate(roots, "ISR-reachable function (via")
 
     def _propagate(self, roots, label):
