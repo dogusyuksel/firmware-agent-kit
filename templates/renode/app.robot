@@ -29,5 +29,5 @@ Answers Version Command
     Create Machine
     Start Emulation
     Wait For Line On Uart     boot ok
-    Write Line To Uart        version
+    Write Line To Uart        version    waitForEcho=false
     Wait For Line On Uart     v\\d+\\.\\d+\\.\\d+    treatAsRegex=true

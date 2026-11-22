@@ -80,9 +80,11 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/work" -w /work/examples/sensor-node fwkit/arm-dev:ci ceedling test:all
           docker run --rm fwkit/arm-dev:ci bash -lc "arm-none-eabi-gcc --version && cppcheck --version && clang-tidy --version && openocd --version"
-      - name: Smoke test renode
+      - name: Smoke test renode (build firmware + run the robot test)
         if: matrix.image == 'renode'
-        run: docker run --rm fwkit/renode:ci bash -lc "renode --version && renode-test --help | head -5"
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work/examples/renode-smoke fwkit/renode:ci bash -lc \
+            "mkdir -p build && arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -Os -nostdlib -ffreestanding -T link.ld main.c -o build/smoke.elf && renode-test smoke.robot"
       - name: Smoke test frama-c
         if: matrix.image == 'frama-c'
         run: docker run --rm fwkit/frama-c:ci frama-c -version

@@ -16,7 +16,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cparse import CFile, Finding, call_args, calls, match_close  # noqa: E402
+from cparse import CFile, Finding, call_args, calls, drop_suppressed, match_close  # noqa: E402
 from fwlib import C_EXTS, git_changed_lines, is_protected, load_config, rel  # noqa: E402
 
 # ------------------------------------------------------------------ API tables
@@ -587,6 +587,8 @@ def check_source(src, cfg, rtos_cfg=None, extra_isr=None):
             break
     if cf.is_esp:
         for m in re.finditer(r"\bportMUX_TYPE\s+(\w+)\s*;", code):
+            if re.search(r"\bextern\b", code[code.rfind("\n", 0, m.start()) + 1:m.start()]):
+                continue  # declaration in a header; defined (and initialised) elsewhere
             add("RTOS-110", "error", m.start(), "portMUX_TYPE '{}' not initialised - use = portMUX_INITIALIZER_UNLOCKED.".format(m.group(1)))
         for m in re.finditer(r"^[ \t]*(?!static\b)portMUX_TYPE\s+(\w+)", code, re.M):
             if cf.func_at(m.start()):
@@ -594,7 +596,7 @@ def check_source(src, cfg, rtos_cfg=None, extra_isr=None):
                     "(shared by all users).".format(m.group(1)))
         for m in re.finditer(r"\bportENTER_CRITICAL\s*\(\s*\)", code):
             add("RTOS-110", "error", m.start(), "ESP-IDF portENTER_CRITICAL() needs a spinlock argument: portENTER_CRITICAL(&mux).")
-    return out
+    return drop_suppressed(src, out)
 
 
 # ------------------------------------------------------------------ project-level rules

@@ -41,6 +41,7 @@ Or run everything in the kit's containers (`docker/`, see `tools/fw_container.py
 | podman | Containers | Apache-2.0 | run builds/tests/analysis in containers (Podman, or Docker Engine) | `winget install -e --id RedHat.Podman ; podman machine init ; podman machine start` | `sudo apt install -y podman` | `brew install podman && podman machine init && podman machine start` |
 
 ## Notes
+- Windows + WSL: when a tool is not installed natively, the kit looks for it in the default WSL distro and runs it through `wsl.exe` (paths are translated). `fw_doctor.py` reports such tools as "available in WSL".
 - Windows: Claude Code already requires Git Bash, which the hooks use. The hook runner skips the Microsoft Store `python3` stub automatically; set `FWKIT_PYTHON` to force an interpreter.
 - MISRA C:2012: the cppcheck addon is open source; the official rule *texts* are sold by MISRA. Without them findings show rule numbers only (`analysis.misra_rules_file` points to your licensed copy).
 - Container engine: Podman or Docker Engine (both Apache-2.0). Docker Desktop is not open source and is never required.

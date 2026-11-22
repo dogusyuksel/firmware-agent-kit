@@ -12,6 +12,38 @@ NOT_ISR = {"Error_Handler", "Default_Handler", "Reset_Handler", "vApplicationSta
            "vApplicationMallocFailedHook", "vApplicationIdleHook", "vApplicationDaemonTaskStartupHook"}
 ESP_ISR_REG_RE = re.compile(r"\b(?:gpio_isr_handler_add\s*\([^,;]+,|esp_intr_alloc(?:_intrstatus)?\s*\([^;]*?,\s*[^,;]*?,)\s*&?(\w+)\s*,")
 ESP_CB_RE = re.compile(r"\.on_\w+\s*=\s*&?(\w+)")
+# ESP-IDF driver callback structs (gptimer_event_callbacks_t, rmt_tx_event_callbacks_t, ...) run their
+# members in ISR context; generic application structs with .on_xxx members do not.
+ESP_CB_TYPE_RE = re.compile(r"\b(\w+_event_callbacks_t|\w+_callbacks_t|\w+_cbs_t)\s+(\w+)\s*(=\s*\{)?")
+SUPPRESS_RE = re.compile(r"fwkit-ignore\b[:\s]*([A-Z]+-\d+(?:[\s,]+[A-Z]+-\d+)*)?")
+
+
+def esp_driver_callbacks(code):
+    out = set()
+    for m in ESP_CB_TYPE_RE.finditer(code):
+        var = m.group(2)
+        if m.group(3):
+            o = m.end() - 1
+            out.update(ESP_CB_RE.findall(code[o:match_close(code, o) + 1]))
+        out.update(re.findall(r"\b" + re.escape(var) + r"\s*(?:\.|->)\s*on_\w+\s*=\s*&?(\w+)", code))
+    return out
+
+
+def suppressed(src_lines, finding):
+    """True if the finding line or the line above carries `fwkit-ignore` (optionally with rule IDs)."""
+    for ln in (finding.line, finding.line - 1):
+        if 1 <= ln <= len(src_lines):
+            m = SUPPRESS_RE.search(src_lines[ln - 1])
+            if m and (not m.group(1) or finding.rule in re.split(r"[\s,]+", m.group(1))):
+                return True
+    return False
+
+
+def drop_suppressed(src, findings):
+    if "fwkit-ignore" not in src:
+        return findings
+    lines = src.splitlines()
+    return [f for f in findings if not suppressed(lines, f)]
 TASK_CREATE_RE = re.compile(r"\b(xTaskCreate|xTaskCreateStatic|xTaskCreatePinnedToCore|xTaskCreateStaticPinnedToCore|osThreadNew)\s*\(")
 TIMER_CREATE_RE = re.compile(r"\b(xTimerCreate|xTimerCreateStatic|osTimerNew)\s*\(")
 
@@ -158,7 +190,7 @@ class CFile(object):
     def _isr_contexts(self, extra_patterns):
         extra = [re.compile(p + r"$") for p in extra_patterns]
         registered = set(ESP_ISR_REG_RE.findall(self.code))
-        cbs = set(ESP_CB_RE.findall(self.code))
+        cbs = esp_driver_callbacks(self.code) if self.is_esp else set()
         self.esp_registered = registered
         roots = {}
         for name, f in self.funcs.items():

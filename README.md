@@ -38,7 +38,7 @@ Then, in your firmware project:
 
 **Local development.** Run `claude --plugin-dir /path/to/firmware-agent-kit`.
 
-**Requirements.** Only Python 3.8+ (stdlib only) and git are needed. Everything else is optional; see [REQUIREMENTS.md](REQUIREMENTS.md).
+**Requirements.** Only Python 3.8+ (stdlib only) and git are needed. Everything else is optional; see [REQUIREMENTS.md](REQUIREMENTS.md). On Windows, tools that are only installed inside WSL (cppcheck, clang-format, clang-tidy, Frama-C, Renode, Ceedling, ...) are found and used automatically through `wsl.exe`.
 
 ## How it behaves
 
@@ -123,6 +123,8 @@ Checks run per file in the edit hook. `--project` mode adds cross-file ISR reach
 
 The rules are calibrated against official FreeRTOS, ESP-IDF and STM32Cube example code, about 200 files, with zero error-level findings (`tests/calibrate_corpus.py`).
 
+Reviewed false positives are silenced in code with a reason: `/* fwkit-ignore EMB-002: length checked above */`.
+
 The full catalogue, with sources and the review-only checklist, is in [docs/RTOS_RULES.md](docs/RTOS_RULES.md).
 
 ### Containers
@@ -137,6 +139,7 @@ The full catalogue, with sources and the review-only checklist, is in [docs/RTOS
 
 ### Example and evals
 - `examples/sensor-node`: a portable ring buffer, frame parser and thread-safe service, with an OSAL over FreeRTOS, Ceedling tests and requirement tags. It demonstrates the recommended patterns and is checked in CI.
+- `examples/renode-smoke`: a minimal STM32F4 firmware plus a Robot test, run in Renode in CI. It validates the integration-test templates.
 - `evals/`: `claude plugin eval .` scenarios (ISR rules, ESP32 SMP, SAMV71 watchdog, minimal diff, RDP2 safety, plan first). Each scenario runs with and without the plugin to measure what the kit adds.
 
 ## Project configuration

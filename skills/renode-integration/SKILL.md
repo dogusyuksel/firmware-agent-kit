@@ -44,12 +44,14 @@ Boots And Prints Banner
     Create Terminal Tester    ${UART}    timeout=5
     Start Emulation
     Wait For Line On Uart     fw: boot ok
-    Write Line To Uart        version
+    Write Line To Uart        version    waitForEcho=false
     Wait For Line On Uart     v\\d+\\.\\d+    treatAsRegex=true
 ```
 Run: `renode-test tests/integration/app.robot` (or `python tools/fw_container.py run renode -- renode-test tests/integration/app.robot`). Results in `robot_output.xml`/`log.html`.
 
 ## Practices
+- `Write Line To Uart` waits for the firmware to echo the line by default in current Renode versions. Pass `waitForEcho=false` unless your firmware echoes, or the test hangs until the timeout.
+- Reference: `examples/renode-smoke` (minimal STM32F4 firmware + robot test, run in CI).
 - Build a dedicated test configuration if needed (`-DSIMULATION=1` only for things the simulator cannot model, e.g. skip waiting for an external PHY) - keep differences minimal and documented.
 - Assert on behaviour (UART protocol, GPIO toggles via `sysbus.gpioPortA.led`, register values with `sysbus ReadDoubleWord`) rather than internal variables.
 - Use virtual time: Renode is deterministic; timeouts in tests are virtual-time based - avoid flaky wall-clock waits.

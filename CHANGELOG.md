@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1 - 2026-11-22
+- Field-report fixes: application structs with `.on_*` members are no longer treated as ESP-IDF ISR callbacks (only `*_event_callbacks_t`/`*_cbs_t` driver structs); `extern portMUX_TYPE` declarations are not flagged as uninitialised; ISR data protected by a spinlock/critical section is not flagged as missing `volatile`; `strcpy`/`strcat` after a `strlen` check of the source is not flagged.
+- `fwkit-ignore <RULE-ID>` suppression comments for reviewed false positives.
+- clang-tidy: integer-to-float narrowing warnings disabled by default (also in the template).
+- Tools found in standard Windows install folders and inside WSL (run through `wsl.exe` with path translation): fw_analyze, fw_format, fw_doctor.
+- Verified locally: the sensor-node Ceedling tests pass (Ceedling 0.31 in WSL); Renode smoke test (`examples/renode-smoke`) passes; fixed `waitForEcho` in the Renode templates; example project.yml compatible with Ceedling 0.31 and 1.0.
+- CI runs the Renode smoke test inside the renode image.
+- fw_analyze: without a compile DB, project header folders are used as include paths and missing-include diagnostics become one note; clang-tidy `bugprone-signed-bitwise` disabled by default (integer-promotion noise). Verified with clang-tidy 23 and cppcheck 2.22: the example project is finding-free.
+
 ## 0.3.0 - 2026-11-22
 - Plan-first working rule and `/fw-plan`; `restructure` skill and `/fw-restructure` for approved refactors.
 - `safety-critical` skill (ECSS/DO-178C-style evidence, MISRA deviations, MC/DC via GCC `-fcondition-coverage`, FDIR, SEU mitigation) and `tools/trace_check.py` + `/fw-trace` for requirements traceability.

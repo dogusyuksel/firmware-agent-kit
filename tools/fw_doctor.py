@@ -20,6 +20,9 @@ import shutil
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import fwlib  # noqa: E402
+
 # name: (commands to probe, license, areas, purpose, {os: install command})
 #   os keys: windows, linux (Debian/Ubuntu apt), mac (Homebrew), any (cross-platform: pip/gem/npm/opam)
 TOOLS = {
@@ -97,7 +100,7 @@ def probe(name, cmds):
         except ImportError:
             return None, None
     for c in cmds:
-        p = shutil.which(c)
+        p = shutil.which(c) or fwlib.find_native(c)
         if not p:
             continue
         if c in ("python3", "python", "py"):  # skip the Windows Store stub
@@ -119,6 +122,10 @@ def probe(name, cmds):
             except Exception:
                 continue
         return c, ver
+    wsl = fwlib.wsl_tools()
+    for c in cmds:
+        if c in wsl:
+            return "wsl:" + c, "available in WSL (kit tools call it through wsl.exe)"
     return None, None
 
 

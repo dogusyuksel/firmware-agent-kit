@@ -13,7 +13,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cparse import CFile, Finding  # noqa: E402
+from cparse import CFile, Finding, call_args, drop_suppressed  # noqa: E402
 from fwlib import git_changed_lines, load_config  # noqa: E402
 import rtos_check  # noqa: E402
 
@@ -61,6 +61,12 @@ def lint_source(src, cfg, extra_isr=None):
             continue
         add("EMB-001", "error", m.start(), "gets() is unbounded - never use it.")
     for m in re.finditer(r"\b(strcpy|strcat|sprintf|vsprintf)\s*\(", code):
+        if m.group(1) in ("strcpy", "strcat"):
+            args, _ = call_args(code, m.end() - 1)
+            f = cf.func_at(m.start())
+            if f and len(args) > 1 and re.search(r"\bstrn?len\s*\(\s*" + re.escape(args[1].strip()) + r"\b",
+                                                 code[f.body_start:m.start()]):
+                continue  # source length checked earlier in the function
         add("EMB-002", "warn", m.start(), "{}() is unbounded; use the n-variant with an explicit size.".format(m.group(1)))
     if lcfg.get("forbid_dynamic_alloc", True):
         for m in re.finditer(r"(?<![\w.>])(malloc|calloc|realloc|free)\s*\(", code):
@@ -103,14 +109,16 @@ def lint_source(src, cfg, extra_isr=None):
                 "ISRs). Prefer fixed-point.".format(why, name))
             break
         reported = set()
-        for g in globals_nv:
+        locked = re.search(r"\b(port|task)ENTER_CRITICAL\w*|__disable_irq|xSemaphoreTake\w*|portSET_INTERRUPT_MASK\w*|"
+                           r"spin_?lock\w*|\w*_lock\s*\(", body)
+        for g in ([] if locked else globals_nv):
             w = re.search(r"(?<![\w.>])" + re.escape(g) + r"\s*(\[[^\]]*\])?\s*(\+\+|--|[-+*/|&^]?=(?!=))|(\+\+|--)\s*"
                           + re.escape(g) + r"\b", body)
             if w and g not in reported:
                 reported.add(g)
                 add("EMB-013", "warn", b0 + w.start(), "'{}' is modified in {} '{}' but not volatile. If other code reads it, "
                     "make it volatile and protect multi-word RMW (critical section / atomic).".format(g, why, name))
-    return out
+    return drop_suppressed(src, out)
 
 
 def lint_file(path, cfg, changed="git", rtos=True, rtos_cfg=None, extra_isr=None):

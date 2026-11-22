@@ -137,6 +137,79 @@ def which(name):
     return shutil.which(name)
 
 
+WIN_TOOL_DIRS = [r"C:\Program Files\Cppcheck", r"C:\Program Files (x86)\Cppcheck", r"C:\Program Files\LLVM\bin",
+                 r"C:\Program Files\qemu"]
+WSL_PROBE = ["cppcheck", "clang-format", "clang-tidy", "frama-c", "valgrind", "renode", "renode-test", "qemu-system-arm",
+             "openocd", "st-flash", "bossac", "edbg", "pyocd", "esptool.py", "idf.py", "arm-none-eabi-gcc", "gcc", "make",
+             "ceedling", "gcovr", "podman", "docker", "pdftotext", "cmake", "ninja", "mmdc"]
+_WSL_TOOLS = None
+
+
+def find_native(name):
+    """PATH lookup plus standard Windows install folders (installers often skip PATH until a new login)."""
+    p = which(name)
+    if p:
+        return p
+    if os.name == "nt":
+        for d in WIN_TOOL_DIRS:
+            c = os.path.join(d, name + ".exe")
+            if os.path.isfile(c):
+                return c
+    return None
+
+
+def wsl_tools():
+    """Set of WSL_PROBE tools available in the default WSL distro (Windows only; cached for a day per user)."""
+    global _WSL_TOOLS
+    if _WSL_TOOLS is not None:
+        return _WSL_TOOLS
+    _WSL_TOOLS = set()
+    if os.name != "nt" or not which("wsl"):
+        return _WSL_TOOLS
+    import time
+    cache = os.path.join(os.path.expanduser("~"), ".cache", "fwkit-wsl-tools.json")
+    try:
+        with open(cache, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if time.time() - data.get("t", 0) < 24 * 3600:
+            _WSL_TOOLS = set(data.get("tools", []))
+            return _WSL_TOOLS
+    except (OSError, ValueError):
+        pass
+    script = "for t in {}; do command -v $t >/dev/null 2>&1 && echo $t; done; exit 0".format(" ".join(WSL_PROBE))
+    rc, out, _ = run(["wsl", "-e", "sh", "-c", script], timeout=90)
+    if rc == 0:
+        _WSL_TOOLS = set(out.replace("\x00", "").split())
+        try:
+            os.makedirs(os.path.dirname(cache), exist_ok=True)
+            with open(cache, "w", encoding="utf-8") as f:
+                json.dump({"t": time.time(), "tools": sorted(_WSL_TOOLS)}, f)
+        except OSError:
+            pass
+    return _WSL_TOOLS
+
+
+def to_wsl_path(p):
+    p = os.path.abspath(p)
+    m = re.match(r"^([A-Za-z]):[\\/](.*)$", p)
+    return "/mnt/{}/{}".format(m.group(1).lower(), m.group(2).replace("\\", "/")) if m else p.replace("\\", "/")
+
+
+def from_wsl_path(p):
+    m = re.match(r"^/mnt/([a-z])/(.*)$", p)
+    return "{}:{}{}".format(m.group(1).upper(), os.sep, m.group(2).replace("/", os.sep)) if m else p
+
+
+def resolve_tool(name):
+    """-> (argv prefix, path converter) for a native tool, else the same tool inside WSL, else (None, None)."""
+    p = find_native(name)
+    if p:
+        return [p], (lambda x: x)
+    if name in wsl_tools():
+        return ["wsl", "-e", name], to_wsl_path
+    return None, None
+
+
 def tool(cfg, name):
     """'size' -> '<toolchain_prefix>size' if installed, else plain 'size' if installed."""
     prefix = cfg.get("toolchain_prefix") or ""

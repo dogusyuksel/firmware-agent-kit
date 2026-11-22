@@ -19,6 +19,14 @@ ISR context covers:
 
 Timer-callback context covers functions passed to `xTimerCreate*` / `osTimerNew`.
 
+## Suppressing a finding
+If a finding is a reviewed false positive, put `fwkit-ignore <RULE-ID>` with a reason in a comment on the same line or the line above:
+`strcpy(dst, src); /* fwkit-ignore EMB-002: length checked against FD_LINE_MAX above */`
+
+A bare `fwkit-ignore` with no rule ID suppresses every rule on that line. Prefer naming the rule.
+
+These comments double as review records. For cppcheck findings use `cppcheck-suppress`; for clang-tidy use `NOLINT(check-name)`.
+
 ## Source keys
 FR = https://www.freertos.org/Documentation/02-Kernel
 

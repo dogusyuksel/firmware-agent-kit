@@ -3,3 +3,9 @@ __pycache__/
 .claude/settings.local.json
 .claude/fw-size-history.jsonl
 evals/results/
+examples/*/build/
+examples/*/logs/
+examples/*/snapshots/
+examples/*/robot_output.xml
+examples/*/log.html
+examples/*/report.html

@@ -34,7 +34,5 @@
         - -std=c11
         - -Wall
         - -Wextra
-
-:plugins:
-  :enabled:
-    - report_tests_pretty_stdout
+# No :plugins: section on purpose: report plugin names differ between Ceedling 0.31
+# (stdout_pretty_tests_report) and 1.0 (report_tests_pretty_stdout); the default output works on both.

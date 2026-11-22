@@ -402,7 +402,64 @@ static void echo_server( void *arg )
 """
 
 
+# False positives reported from a real ESP-IDF project (application callbacks, extern spinlock, locked ISR data).
+FIELD_FP_REGRESSION_C = """\
+#include "freertos/FreeRTOS.h"
+#include "fd_service.h"
+#include <string.h>
+portMUX_TYPE g_live_lock = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t g_live;
+static void on_event_handler(int ev) { fd_uart_printf("ev %d", ev); }
+static const app_callbacks_t s_app_cbs = { .on_event = on_event_handler };   /* not an ESP-IDF driver struct */
+void fd_copy(char *dst, const char *src)
+{
+    if (strlen(src) >= FD_LINE_MAX) { return; }
+    strcpy(dst, src);                                                     /* bounded above */
+}
+static void IRAM_ATTR timer_isr(void *arg)
+{
+    portENTER_CRITICAL_ISR(&g_live_lock);
+    g_live++;                                                             /* protected by the spinlock */
+    portEXIT_CRITICAL_ISR(&g_live_lock);
+}
+void legacy(char *d, const char *s)
+{
+    strcat(d, s); /* fwkit-ignore EMB-002: d is sized for the longest s */
+}
+"""
+FIELD_FP_REGRESSION_H = """\
+#include "freertos/FreeRTOS.h"
+extern portMUX_TYPE g_live_lock;
+"""
+
+
 class RtosRules(Base):
+    def test_field_report_false_positives(self):
+        import rtos_check
+        import fw_lint
+        from fwlib import DEFAULT_CONFIG
+        cfg = dict(DEFAULT_CONFIG)
+        found = [str(f) for f in fw_lint.lint_source(FIELD_FP_REGRESSION_C, cfg) +
+                 rtos_check.check_source(FIELD_FP_REGRESSION_C, cfg) + rtos_check.check_source(FIELD_FP_REGRESSION_H, cfg)]
+        self.assertEqual([f for f in found if any(r in f for r in ("RTOS-011", "RTOS-110", "EMB-013", "EMB-002", "EMB-011"))], [])
+
+    def test_esp_driver_callback_struct_is_isr(self):
+        import rtos_check
+        from fwlib import DEFAULT_CONFIG
+        src = textwrap.dedent("""\
+            #include "driver/gptimer.h"
+            static bool on_alarm(gptimer_handle_t t, const gptimer_alarm_event_data_t *e, void *ctx) { xQueueSend(q, &e, 0); return false; }
+            void setup(void) { gptimer_event_callbacks_t cbs = { .on_alarm = on_alarm }; gptimer_register_event_callbacks(t, &cbs, NULL); }
+            """)
+        self.assertIn("RTOS-011", {f.rule for f in rtos_check.check_source(src, DEFAULT_CONFIG)})
+
+    def test_suppression_comment(self):
+        import fw_lint
+        from fwlib import DEFAULT_CONFIG
+        src = "void f(char *d, const char *s)\n{\n    // fwkit-ignore EMB-002\n    strcpy(d, s);\n    strcpy(d, s);\n}\n"
+        lines = [f.line for f in fw_lint.lint_source(src, DEFAULT_CONFIG) if f.rule == "EMB-002"]
+        self.assertEqual(lines, [5])
+
     def test_no_regression_false_positives(self):
         import rtos_check
         from fwlib import DEFAULT_CONFIG

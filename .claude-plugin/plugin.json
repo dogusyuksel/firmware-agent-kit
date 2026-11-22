@@ -1,6 +1,6 @@
 {
   "name": "firmware-agent-kit",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Bare-metal and FreeRTOS firmware toolkit for STM32, ESP32 and SAM V71: domain skills, specialist agents, /fw-* commands, RTOS-aware static checks (RTOS-xxx rules, SARIF), open-source analyzers and container toolchains, and safety hooks that block irreversible target operations.",
   "author": {
     "name": "dogusyuksel"

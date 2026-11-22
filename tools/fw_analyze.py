@@ -28,12 +28,31 @@ import fw_lint  # noqa: E402
 import rtos_check  # noqa: E402
 from build_info import norm_args, split_cmd  # noqa: E402
 from fwfmt import format_file  # noqa: E402
-from fwlib import (C_EXTS, find_compile_commands, git_changed_files, git_changed_lines, is_protected,  # noqa: E402
-                   load_config, rel, run, which)
+from fwlib import (C_EXTS, find_compile_commands, from_wsl_path, git_changed_files, git_changed_lines,  # noqa: E402
+                   is_protected, load_config, rel, resolve_tool, run)
 
+# Integer->float narrowing (e.g. a 12-bit ADC value into float) is lossless and very common in firmware.
+TIDY_OPTIONS = ("CheckOptions: [{key: bugprone-narrowing-conversions.WarnOnIntegerToFloatingPointNarrowingConversion, "
+                "value: false}]")
 DEFAULT_TIDY_CHECKS = ("-*,clang-analyzer-*,bugprone-*,cert-*,misc-redundant-expression,"
                        "-bugprone-easily-swappable-parameters,-cert-err33-c,-bugprone-reserved-identifier,"
-                       "-cert-dcl37-c,-cert-dcl51-cpp")
+                       "-cert-dcl37-c,-cert-dcl51-cpp,-bugprone-signed-bitwise")
+# bugprone-signed-bitwise fires on every `(uint16_t)u8 << 8` (integer promotion) - pure noise in firmware;
+# essential-type issues are covered by the MISRA addon instead.
+MISSING_INCLUDE_RE = re.compile(r"file not found|cannot open source file", re.I)
+
+
+def header_dirs(proj, cfg, limit=60):
+    """Project directories that contain headers - fallback include paths when there is no compile DB."""
+    dirs = []
+    skip = {".git", "build", "node_modules", ".venv", "venv", "out", "managed_components"}
+    for root, sub, files in os.walk(proj):
+        sub[:] = [d for d in sub if d not in skip and not d.startswith("build")]
+        if any(f.endswith((".h", ".hpp")) for f in files) and not is_protected(rel(root, proj) + "/", cfg):
+            dirs.append(root)
+            if len(dirs) >= limit:
+                break
+    return dirs
 
 
 class Item(object):
@@ -58,8 +77,10 @@ def load_db(cc):
     return out
 
 
-def flags_for(files, db):
+def flags_for(files, db, fallback_dirs=None):
     incs, defs = [], []
+    if not db and fallback_dirs:
+        return list(fallback_dirs), []
     for f in files:
         info = db.get(os.path.normcase(os.path.abspath(f)))
         if info:
@@ -83,25 +104,25 @@ def run_rtos_project(proj, cfg):
 
 
 def run_cppcheck(files, db, cfg, misra):
-    exe = which("cppcheck")
+    exe, conv = resolve_tool("cppcheck")
     if not exe:
         return None
     incs, defs = flags_for(files, db)
-    cmd = [exe, "--enable=warning,style,performance,portability", "--inline-suppr", "--quiet",
+    cmd = exe + ["--enable=warning,style,performance,portability", "--inline-suppr", "--quiet",
            "--platform=unix32", "--suppress=missingIncludeSystem", "--suppress=unmatchedSuppression",
            "--template={file}:{line}:{severity}:{id}:{message}"]
-    cmd += ["-I" + i for i in incs[:200]] + ["-D" + d for d in defs[:200]]
+    cmd += ["-I" + conv(i) for i in incs[:200]] + ["-D" + d for d in defs[:200]]
     tmp = None
     if misra:
         rules = (cfg.get("analysis") or {}).get("misra_rules_file")
         if rules:
             tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
-            json.dump({"script": "misra.py", "args": ["--rule-texts=" + os.path.abspath(rules)]}, tmp)
+            json.dump({"script": "misra.py", "args": ["--rule-texts=" + conv(os.path.abspath(rules))]}, tmp)
             tmp.close()
-            cmd.append("--addon=" + tmp.name)
+            cmd.append("--addon=" + conv(tmp.name))
         else:
             cmd.append("--addon=misra")
-    rc, out, err = run(cmd + files, timeout=900)
+    rc, out, err = run(cmd + [conv(f) for f in files], timeout=900)
     if tmp:
         os.unlink(tmp.name)
     items = []
@@ -110,50 +131,56 @@ def run_cppcheck(files, db, cfg, misra):
         if m and m.group(3) != "information":
             sev = "error" if m.group(3) == "error" else "warn"
             rule = m.group(4) if not m.group(4).startswith("misra") else m.group(4).replace("misra-c2012-", "MISRA-")
-            items.append(Item("cppcheck", m.group(1), m.group(2), sev, rule, m.group(5).strip()))
+            items.append(Item("cppcheck", from_wsl_path(m.group(1)), m.group(2), sev, rule, m.group(5).strip()))
     return items
 
 
-def run_clang_tidy(files, cc, cfg):
-    exe = which("clang-tidy")
+def run_clang_tidy(files, cc, cfg, db=None):
+    exe, conv = resolve_tool("clang-tidy")
     if not exe:
         return None
-    cmd = [exe, "--quiet"]
-    if cc:
+    in_wsl = exe[0] == "wsl"
+    cmd = exe + ["--quiet"]
+    if cc and not in_wsl:          # a Windows compile DB is useless inside WSL; pass flags explicitly instead
         cmd += ["-p", os.path.dirname(cc)]
     if not os.path.isfile(os.path.join(os.getcwd(), ".clang-tidy")):
-        cmd += ["--checks=" + ((cfg.get("analysis") or {}).get("clang_tidy_checks") or DEFAULT_TIDY_CHECKS)]
+        checks = (cfg.get("analysis") or {}).get("clang_tidy_checks") or DEFAULT_TIDY_CHECKS
+        cmd += ["--config={Checks: '" + checks + "', " + TIDY_OPTIONS + "}"]
     prefix = cfg.get("toolchain_prefix") or ""
     if "arm-none-eabi" in prefix:
         cmd += ["--extra-arg=--target=arm-none-eabi"]
     cmd += ["--extra-arg=-Wno-unknown-warning-option", "--extra-arg=-Wno-unused-command-line-argument"]
     items = []
     for f in files:
-        rc, out, err = run(cmd + [f] + ([] if cc else ["--"]), timeout=600)
+        tail = []
+        if not cc or in_wsl:
+            incs, defs = flags_for([f], db or {}, None if db else header_dirs(os.getcwd(), cfg))
+            tail = ["--"] + ["-I" + conv(i) for i in incs] + ["-D" + d for d in defs]
+        rc, out, err = run(cmd + [conv(f)] + tail, timeout=600)
         for line in out.splitlines():
             m = re.match(r"^(.+?):(\d+):\d+:\s+(warning|error):\s+(.*?)\s+\[([\w\-.,]+)\]$", line.strip())
             if m:
-                items.append(Item("clang-tidy", m.group(1), m.group(2), "error" if m.group(3) == "error" else "warn",
+                items.append(Item("clang-tidy", from_wsl_path(m.group(1)), m.group(2), "error" if m.group(3) == "error" else "warn",
                                   m.group(5), m.group(4)))
     return items
 
 
 def run_framac(files, db):
-    exe = which("frama-c")
+    exe, conv = resolve_tool("frama-c")
     if not exe:
         return None
     incs, defs = flags_for(files, db)
-    cpp = " ".join(["-I" + i for i in incs] + ["-D" + d for d in defs])
-    cmd = [exe, "-eva", "-eva-precision", "1", "-eva-no-show-progress", "-machdep", "gcc_x86_32"]
+    cpp = " ".join(["-I" + conv(i) for i in incs] + ["-D" + d for d in defs])
+    cmd = exe + ["-eva", "-eva-precision", "1", "-eva-no-show-progress", "-machdep", "gcc_x86_32"]
     if cpp:
         cmd += ["-cpp-extra-args=" + cpp]
-    rc, out, err = run(cmd + files, timeout=1800)
+    rc, out, err = run(cmd + [conv(f) for f in files], timeout=1800)
     items = []
     for line in (out + "\n" + err).splitlines():
         m = re.match(r"^\[(eva:alarm|eva|kernel)[^\]]*\]\s+(.+?):(\d+):\s*(Warning|Error)?:?\s*(.*)$", line.strip())
         if m:
             sev = "error" if m.group(4) == "Error" else "warn"
-            items.append(Item("frama-c", m.group(2), m.group(3), sev, m.group(1), m.group(5).strip()))
+            items.append(Item("frama-c", from_wsl_path(m.group(2)), m.group(3), sev, m.group(1), m.group(5).strip()))
     return items
 
 
@@ -217,7 +244,7 @@ def main():
         "lint": lambda: run_lint(files, cfg, rc_vals, isr_map),
         "rtos": lambda: run_rtos_project(proj, cfg),
         "cppcheck": lambda: run_cppcheck(srcs, db, cfg, misra) if srcs else [],
-        "clang-tidy": lambda: run_clang_tidy(srcs, cc, cfg) if srcs else [],
+        "clang-tidy": lambda: run_clang_tidy(srcs, cc, cfg, db) if srcs else [],
         "frama-c": lambda: run_framac(srcs, db) if srcs else [],
     }
     for t in tools:
@@ -238,7 +265,12 @@ def main():
         if res is None:
             notes.append("{}: not installed - skipped (free/open source; see tools/fw_doctor.py --for analysis)".format(t))
         else:
-            items += res
+            missing = [i for i in res if MISSING_INCLUDE_RE.search(i.msg)]
+            if missing:
+                notes.append("{}: {} file(s) could not be fully parsed (missing includes, e.g. {}) - generate "
+                             "compile_commands.json for accurate results (tools/build_info.py explains how)".format(
+                                 t, len({i.file for i in missing}), missing[0].msg[:60]))
+            items += [i for i in res if not MISSING_INCLUDE_RE.search(i.msg)]
 
     # keep only changed lines unless asked otherwise
     if not (args.all or args.all_lines):

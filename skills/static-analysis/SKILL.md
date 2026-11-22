@@ -16,6 +16,8 @@ It runs whatever is installed, uses `compile_commands.json` for include paths/de
 
 Report pre-existing findings in untouched code to the user; fix only what the task covers.
 
+Tools are found on PATH, in standard Windows install folders, or inside WSL (called through `wsl.exe` with path translation). Reviewed false positives are suppressed in code with a reason: `fwkit-ignore EMB-002: <why>` (kit rules), `cppcheck-suppress <id>`, `NOLINT(<check>)`. Integer-to-float narrowing warnings from clang-tidy are disabled by default (lossless for typical ADC/sensor widths).
+
 ## Tools and what they are good at
 | Tool | Finds | Notes |
 |---|---|---|
