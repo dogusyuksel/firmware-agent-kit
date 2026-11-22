@@ -1,0 +1,27 @@
+{
+  "name": "firmware-agent-kit",
+  "owner": {
+    "name": "dogusyuksel"
+  },
+  "metadata": {
+    "description": "Claude Code plugins for bare-metal embedded firmware development.",
+    "version": "0.2.0"
+  },
+  "plugins": [
+    {
+      "name": "firmware-agent-kit",
+      "source": "./",
+      "description": "Skills, agents, commands, RTOS-aware checks and safety hooks for bare-metal/FreeRTOS firmware (STM32, ESP32, SAM V71).",
+      "version": "0.2.0",
+      "category": "development",
+      "tags": [
+        "embedded",
+        "firmware",
+        "freertos",
+        "stm32",
+        "esp32",
+        "samv71"
+      ]
+    }
+  ]
+}

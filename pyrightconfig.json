@@ -1,0 +1,5 @@
+{
+  "extraPaths": ["tools", "hooks/scripts"],
+  "pythonVersion": "3.8",
+  "reportMissingModuleSource": false
+}

@@ -1,0 +1,21 @@
+# firmware-agent-kit default style for NEW projects (existing projects keep their own style).
+BasedOnStyle: LLVM
+Language: Cpp
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 110
+BreakBeforeBraces: Allman
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AlignConsecutiveMacros: AcrossComments
+AlignConsecutiveAssignments: false
+AlignTrailingComments: true
+PointerAlignment: Right
+SpaceAfterCStyleCast: false
+SortIncludes: Never
+IndentCaseLabels: true
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 1
+ReflowComments: false

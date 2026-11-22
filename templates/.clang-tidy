@@ -1,0 +1,16 @@
+# firmware-agent-kit clang-tidy profile for embedded C (copy to the project root and adjust).
+Checks: >
+  -*,
+  clang-analyzer-*,
+  bugprone-*,
+  cert-*,
+  misc-redundant-expression,
+  readability-misleading-indentation,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-reserved-identifier,
+  -cert-dcl37-c,
+  -cert-dcl51-cpp,
+  -cert-err33-c,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+WarningsAsErrors: ''
+HeaderFilterRegex: '^(?!.*(Drivers|CMSIS|third_party|managed_components)).*$'

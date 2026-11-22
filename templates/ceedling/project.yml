@@ -1,0 +1,68 @@
+# firmware-agent-kit Ceedling template (Ceedling 1.0 syntax). Adapt :paths: to your layout.
+# Run: ceedling test:all | ceedling test:<module> | ceedling gcov:all
+:project:
+  :build_root: build/test
+  :test_file_prefix: test_
+  :use_mocks: TRUE
+  :use_test_preprocessor: :all
+  :default_tasks:
+    - test:all
+
+:paths:
+  :test:
+    - +:test/**
+    - -:test/support
+  :source:
+    - src/**
+    - app/**
+  :include:
+    - inc/**
+    - include/**
+    - test/support
+  :support:
+    - test/support
+
+:defines:
+  :test:
+    - UNIT_TEST
+    - HOST_BUILD
+
+:cmock:
+  :mock_prefix: mock_
+  :when_no_prototypes: :warn
+  :enforce_strict_ordering: TRUE
+  :treat_externs: :include
+  :plugins:
+    - :ignore
+    - :ignore_arg
+    - :expect_any_args
+    - :return_thru_ptr
+    - :callback
+    - :array
+
+# Host compiler flags. Uncomment the sanitizer lines on Linux/macOS (or in the arm-dev container).
+:flags:
+  :test:
+    :compile:
+      :*:
+        - -std=c11
+        - -Wall
+        - -Wextra
+        - -g
+        # - -fsanitize=address,undefined
+        # - -fno-omit-frame-pointer
+    # :link:
+    #   :*:
+    #     - -fsanitize=address,undefined
+
+:plugins:
+  :enabled:
+    - report_tests_pretty_stdout
+    - module_generator
+    - gcov
+
+:gcov:
+  :utilities:
+    - gcovr
+  :reports:
+    - HtmlDetailed

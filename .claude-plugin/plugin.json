@@ -1,0 +1,25 @@
+{
+  "name": "firmware-agent-kit",
+  "version": "0.2.0",
+  "description": "Bare-metal and FreeRTOS firmware toolkit for STM32, ESP32 and SAM V71: domain skills, specialist agents, /fw-* commands, RTOS-aware static checks (RTOS-xxx rules, SARIF), open-source analyzers and container toolchains, and safety hooks that block irreversible target operations.",
+  "author": {
+    "name": "dogusyuksel"
+  },
+  "homepage": "https://github.com/dogusyuksel/firmware-agent-kit",
+  "repository": "https://github.com/dogusyuksel/firmware-agent-kit",
+  "license": "MIT",
+  "keywords": [
+    "embedded",
+    "firmware",
+    "bare-metal",
+    "freertos",
+    "cmsis",
+    "stm32",
+    "esp32",
+    "samv71",
+    "cortex-m",
+    "misra",
+    "ceedling",
+    "renode"
+  ]
+}
