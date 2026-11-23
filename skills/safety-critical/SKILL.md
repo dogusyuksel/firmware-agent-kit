@@ -24,9 +24,9 @@ The kit helps produce **evidence**; it does not make a project compliant. Compli
 - Prohibited by most critical-software standards: dynamic allocation after init, recursion, unbounded loops, unchecked return values, implicit conversions that change sign/size, goto-heavy flow, multiple threads touching unprotected data.
 
 ## Structural coverage
-- Statement/branch coverage: Ceedling `gcov:all` + gcovr.
+- Statement/branch coverage: GCC `--coverage` + gcov.
 - **MC/DC** (needed at the highest criticality levels): GCC 14+ provides condition coverage `-fcondition-coverage` with `gcov --conditions` (free). Report per decision which conditions were not shown to independently affect the outcome; add tests or justify (defensive code, hardware-only paths).
-- Coverage of target-only code: run tests on target/Renode with gcov dumped via semihosting/RTT, or argue by analysis; document the method.
+- Coverage of target-only code: run tests on target with gcov dumped via semihosting/RTT, or argue by analysis; document the method.
 
 ## Defensive programming
 - Validate all inputs at module boundaries; check every return value; range-check indices before use.
@@ -44,11 +44,11 @@ The kit helps produce **evidence**; it does not make a project compliant. Compli
 ## Radiation effects (space)
 - SEU (bit flips): EDAC/ECC memories (enable and handle correctable/uncorrectable error interrupts), periodic **scrubbing** of RAM and configuration registers, TMR or complement-checked critical variables, CRC on configuration tables, re-write peripheral configuration periodically.
 - SEFI/latch-up: external watchdog independent of the MCU clock, current monitoring with power cycling by a supervisor, timeouts on every hardware wait.
-- Program memory: dual images with CRC and a robust boot selector (see `bootloader`).
-- Commercial MCUs (STM32, SAMV71, ESP32) are not rad-hard; the SAMV71 family has radiation-tolerant variants (SAMV71Q21RT) - mitigation is an architecture topic; record assumptions.
+- Program memory: dual images with CRC and a robust boot selector.
+- Commercial MCUs (STM32, SAMV71) are not rad-hard; the SAMV71 family has radiation-tolerant variants (SAMV71Q21RT) - mitigation is an architecture topic; record assumptions.
 
 ## Watchdog strategy
 Windowed or independent watchdog kicked only by a supervisor that verifies every critical task reported progress within its deadline (never from an ISR or timer). Log watchdog resets and count them for FDIR escalation.
 
 ## Verification evidence checklist (map to the project's plan)
-Requirements trace matrix - unit test reports - coverage (statement/branch/MC/DC) with justifications - static analysis reports with dispositions (SARIF) - MISRA deviation list - stack/heap worst-case analysis - timing/WCET analysis (`timing-analysis`) - code review records (`/fw-review` outputs) - configuration (tool versions: containers pin them) - problem reports.
+Requirements trace matrix - unit test reports - coverage (statement/branch/MC/DC) with justifications - static analysis reports with dispositions - MISRA deviation list - stack/heap worst-case analysis - timing/WCET analysis - code review records (`/fw-review` outputs) - configuration (pinned tool versions) - problem reports.

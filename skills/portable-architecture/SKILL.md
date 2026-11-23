@@ -1,6 +1,6 @@
 ---
 name: portable-architecture
-description: Hardware-independent, testable firmware architecture across STM32, ESP32 and SAMV71 - layering (app / services / drivers / BSP / HAL port), interfaces in C, OSAL over FreeRTOS/CMSIS-RTOS2, dependency injection, thread-safe public APIs, ISR-safe contracts, error handling and module conventions. Use when designing new modules, porting code between MCUs, or making code unit-testable.
+description: Hardware-independent, testable firmware architecture across Cortex-M families (STM32, SAM V71, ...) - layering (app / services / drivers / BSP / HAL port), interfaces in C, OSAL over FreeRTOS/CMSIS-RTOS2, dependency injection, thread-safe public APIs, ISR-safe contracts, error handling and module conventions. Use when designing new modules, porting code between MCUs, or making code unit-testable.
 ---
 
 # Portable firmware architecture
@@ -11,11 +11,11 @@ app/          business logic, state machines         -> services, osal
 services/     protocols, storage, logging, sensors    -> drivers (interfaces), osal
 drivers/      device drivers (external chips)         -> hal interfaces (spi_bus_t, i2c_bus_t, gpio_pin_t)
 hal/          interfaces only (*.h)                   -> nothing
-port/<mcu>/   HAL implementations: stm32/, esp32/, samv71/ (registers, vendor HAL/ESP-IDF/ASF4)
+port/<mcu>/   HAL implementations: stm32/, samv71/ (registers, vendor HAL/ASF4/Harmony)
 osal/         osal.h + osal_freertos.c / osal_cmsis_rtos2.c / osal_host.c (tests)
 bsp/<board>/  pin map, clock config, which port instance backs which interface
 ```
-Only `port/` and `bsp/` include vendor headers. Everything above compiles on the host -> unit tests with Ceedling (see `host-unit-test`).
+Only `port/` and `bsp/` include vendor headers. Everything above compiles on the host -> host builds and unit tests.
 
 ## Interfaces in C
 ```c
@@ -46,7 +46,7 @@ int  osal_queue_send(osal_queue_t q, const void *item, uint32_t timeout_ms);
 int  osal_queue_send_from_isr(osal_queue_t q, const void *item, bool *woken);
 uint32_t osal_ms(void);
 ```
-Implementations: FreeRTOS native (STM32/SAMV71), ESP-IDF FreeRTOS (stack bytes, pinned tasks), CMSIS-RTOS2 (Cube), host (pthreads or single-threaded fakes for tests). ISR variants are separate functions - never "detect ISR context" at runtime in portable code.
+Implementations: FreeRTOS native, CMSIS-RTOS2 (Cube), host (pthreads or single-threaded fakes for tests). ISR variants are separate functions - never "detect ISR context" at runtime in portable code.
 
 ## Public API rules (every module)
 1. **Thread-safe**: public (non-static) functions may be called from any task. Protect shared state with a mutex (blocking OK), a short critical section (tiny updates), or route all access through one owner task via a queue. State the choice in the header.
@@ -60,7 +60,6 @@ Implementations: FreeRTOS native (STM32/SAMV71), ESP-IDF FreeRTOS (stack bytes, 
 ## Matching an existing codebase
 When the project already exists, its conventions win over this skill: run `python <kit>/tools/style_probe.py` and mirror the naming, error type, comment style and file layout of neighbouring modules. Only introduce layers/OSAL when the user asks for a refactor.
 
-## Porting checklist (e.g. STM32 -> SAMV71 or ESP32)
+## Porting checklist (e.g. STM32 -> SAMV71)
 - New `port/<mcu>/` implementing the same `hal/` interfaces; BSP pin/clock tables.
-- Differences that leak: DMA/cache coherency (M7, ESP32 PSRAM), interrupt priority model (NVIC vs ESP interrupt allocator), stack units (ESP bytes), critical sections (ESP spinlocks), endianness (all little-endian here), alignment.
-- Run the same host unit tests; add a Renode/QEMU smoke test per port where possible.
+- Differences that leak: DMA/cache coherency (M7), interrupt priority bits (`__NVIC_PRIO_BITS`), BASEPRI availability (none on M0/M0+), endianness (all little-endian here), alignment.

@@ -9,7 +9,7 @@ You are a firmware footprint specialist. You find where bytes go and propose the
 
 ## Procedure
 1. Read `.claude/firmware.json` for `build`, `elf`, `map`, `memory`. If no map file is produced, note the flag needed (`-Wl,-Map=...`) and ask the caller before changing build files.
-2. Baseline (ESP-IDF: use `idf.py size`, `size-components`, `size-files` instead of `size`): `arm-none-eabi-size -B -d <elf>` and `-A -d`, flash/RAM % of the part. Check `.claude/fw-size-history.jsonl` for recent growth.
+2. Baseline: `arm-none-eabi-size -B -d <elf>` and `-A -d`, flash/RAM % of the part. Check `.claude/fw-size-history.jsonl` for recent growth.
 3. Breakdown:
    - `python "${CLAUDE_PLUGIN_ROOT}/skills/memory-footprint/scripts/map_analyzer.py" <map> --top 30` (locate with Glob if the variable is unset).
    - `arm-none-eabi-nm -S --size-sort -r -C <elf> | head -50`.

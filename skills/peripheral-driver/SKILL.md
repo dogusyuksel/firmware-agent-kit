@@ -1,6 +1,6 @@
 ---
 name: peripheral-driver
-description: Workflow for writing or fixing register-level peripheral drivers (GPIO, UART, SPI, I2C, timers, ADC, DMA, CAN, USB) on MCUs from the reference manual and device headers. Use when creating a driver, porting one to another MCU, debugging a peripheral that "does nothing", or replacing vendor HAL calls with direct register code.
+description: Workflow for writing or fixing register-level peripheral drivers (GPIO, UART, SPI, I2C, timers, ADC, DMA, CAN, USB) on MCUs from the reference manual and device headers. Use when creating a driver, porting one to another MCU, or replacing vendor HAL calls with direct register code.
 ---
 
 # Register-level peripheral driver workflow
@@ -48,7 +48,7 @@ size_t       uart_read(uart_id_t id, uint8_t *buf, size_t max);  /* from RX ring
 void         uart_deinit(uart_id_t id);
 ```
 - Keep a per-instance context struct (`static uart_ctx_t ctx[UART_COUNT]`) holding the register base, ring buffers and state.
-- Separate the thin register layer (`uart_ll.h`, static inline) from logic so logic can be unit-tested on the host with a fake register struct (see `host-unit-test`).
+- Separate the thin register layer (`uart_ll.h`, static inline) from logic so logic can be unit-tested on the host with a fake register struct.
 - Async APIs must define buffer ownership: the caller may not touch `buf` until `done` fires.
 
 ## DMA notes
@@ -56,11 +56,3 @@ void         uart_deinit(uart_id_t id);
 - On Cortex-M7 with D-cache: clean cache before TX DMA (`SCB_CleanDCache_by_Addr`), invalidate after RX DMA; buffers 32-byte aligned and sized to whole cache lines - or place them in a non-cacheable MPU region.
 - Clear all stream/channel flags before enabling; check transfer-error flags in the ISR.
 - Circular RX DMA + idle-line interrupt is the robust pattern for UART receive.
-
-## Debugging a peripheral that does nothing
-1. Clock enabled? Read the RCC enable register in the debugger.
-2. Pin AF correct? Read GPIO MODER/AFR; compare with the datasheet AF table.
-3. Peripheral enable bit set, and config written while disabled?
-4. Error flags (OVR, FE, NACK, BERR, MODF) set?
-5. IRQ: peripheral IE bit, NVIC enable, handler name matches vector table, priority not masked by BASEPRI/PRIMASK.
-6. Scope/logic analyzer on the pin - verify the hardware, not just registers.

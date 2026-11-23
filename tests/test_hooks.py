@@ -17,7 +17,6 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOOKS = os.path.join(ROOT, "hooks", "scripts")
 TOOLS = os.path.join(ROOT, "tools")
-DECODER = os.path.join(ROOT, "skills", "hardfault-debug", "scripts", "decode_fault.py")
 MAPPER = os.path.join(ROOT, "skills", "memory-footprint", "scripts", "map_analyzer.py")
 HAVE_GCC = shutil.which("arm-none-eabi-gcc") is not None
 sys.path.insert(0, TOOLS)
@@ -64,32 +63,26 @@ class GuardTargetOps(Base):
         return decision(self.bash("guard_target_ops.py", cmd))
 
     def test_deny_irreversible(self):
-        for cmd in ["STM32_Programmer_CLI -c port=SWD -ob RDP=0xCC", "espefuse.py --port COM3 burn_efuse JTAG_DISABLE",
-                    "esptool.py burn_efuse FLASH_CRYPT_CNT", "picotool otp set 0x10 0x1", "idf.py efuse-burn --do-not-confirm"]:
+        for cmd in ["STM32_Programmer_CLI -c port=SWD -ob RDP=0xCC", "openocd -c 'rdp_level 2'", "tool set_security_bit"]:
             self.assertEqual(self.g(cmd), "deny", cmd)
 
     def test_ask_destructive(self):
-        for cmd in ["st-flash erase", "nrfjprog -f nrf52 --recover", "openocd -c 'init; stm32f4x unlock 0; exit'",
+        for cmd in ["st-flash erase", "openocd -c 'init; stm32f4x unlock 0; exit'",
                     "openocd -c 'init; stm32f1x mass_erase 0'", "STM32_Programmer_CLI -c port=SWD -ob RDP=0xAA",
-                    "avrdude -c usbasp -p m328p -U lfuse:w:0xFF:m", "esptool.py --chip esp32 erase_flash",
-                    "pyocd erase --chip -t stm32f407vg", "idf.py -p COM3 erase-flash",
-                    "openocd -f target/atsamv.cfg -c 'init; atsamv gpnvm set 1; exit'", "bossac -p COM4 -e -w app.bin"]:
+                    "pyocd erase --chip -t stm32f407vg",
+                    "openocd -f target/atsamv.cfg -c 'init; atsamv gpnvm set 1; exit'", "bossac -p /dev/ttyACM0 -e -w app.bin"]:
             self.assertEqual(self.g(cmd), "ask", cmd)
 
     def test_allow_normal(self):
         for cmd in ["openocd -f interface/stlink.cfg -f target/stm32f4x.cfg -c \"program build/app.elf verify reset exit\"",
-                    "cmake --build build", "idf.py build", "idf.py -p COM3 flash monitor", "git status", "espefuse.py summary",
+                    "cmake --build build", "make flash", "git status",
                     "openocd -f target/atsamv.cfg -c 'init; atsamv gpnvm show; exit'"]:
             self.assertIsNone(self.g(cmd), cmd)
-
-    def test_esp_secure_boot_flash_asks(self):
-        self.write("sdkconfig", "CONFIG_SECURE_BOOT=y\nCONFIG_SECURE_BOOT_V2_ENABLED=y\n")
-        self.assertEqual(self.g("idf.py -p COM3 flash"), "ask")
 
     def test_project_patterns_and_confirm_flash(self):
         self.write(".claude/firmware.json", json.dumps({"guard": {"deny_patterns": [r"\bmy_lock_tool\b"], "confirm_flash": True}}))
         self.assertEqual(self.g("my_lock_tool --go"), "deny")
-        self.assertEqual(self.g("pyocd flash -t nrf52840 app.hex"), "ask")
+        self.assertEqual(self.g("make flash"), "ask")
 
     def test_disabled(self):
         self.write(".claude/firmware.json", json.dumps({"guard": {"enabled": False}}))
@@ -140,7 +133,7 @@ class GuardEdits(Base):
         self.assertEqual(decision(self.edit(p, "HAL_Init();")), "ask")
 
     def test_vendor_paths(self):
-        for rel in ("Drivers/STM32F4xx_HAL_Driver/Src/x.c", "managed_components/espressif__led/x.c", "config/default/peripheral/usart/x.c"):
+        for rel in ("Drivers/STM32F4xx_HAL_Driver/Src/x.c", "Drivers/CMSIS/Include/core_cm4.h", "config/default/peripheral/usart/x.c"):
             p = self.write(rel, "int x;\n")
             self.assertEqual(decision(self.edit(p, "int x;")), "ask", rel)
         self.assertIsNone(self.edit(self.write("src/app.c", "int x;\n"), "int x;"))
@@ -319,7 +312,7 @@ int main(void)
 """
 
 
-# Patterns from official FreeRTOS / ESP-IDF demo code that once produced false positives.
+# Patterns from official FreeRTOS / vendor demo code that once produced false positives.
 RTOS_FP_REGRESSION = """\
 #include "FreeRTOS.h"
 #include "semphr.h"
@@ -356,17 +349,17 @@ static void prvTakeTwiceNonBlocking( void )
     xSemaphoreGive( xISRMutex );
 }
 
-static void IRAM_ATTR gpio_isr_handler( void *arg )
+static void gpio_isr_handler( void *arg )
 {
     uint32_t n = (uint32_t)arg;
     xQueueSendFromISR( xQueue, &n, NULL );                      /* &n is the item, not 'woken' */
 }
 
-static bool IRAM_ATTR on_alarm_cb( void *ctx )
+static bool timer_isr_cb( void *ctx )
 {
     BaseType_t high_task_awoken = pdFALSE;
     xQueueSendFromISR( xQueue, &ctx, &high_task_awoken );
-    return high_task_awoken == pdTRUE;                          /* ESP-IDF drivers yield on return */
+    return high_task_awoken == pdTRUE;                          /* the calling driver yields on return */
 }
 
 void vApplicationTickHook( void )
@@ -402,63 +395,72 @@ static void echo_server( void *arg )
 """
 
 
-# False positives reported from a real ESP-IDF project (application callbacks, extern spinlock, locked ISR data).
-FIELD_FP_REGRESSION_C = """\
-#include "freertos/FreeRTOS.h"
-#include "fd_service.h"
+# False-positive patterns reported from a real project (application callbacks, bounded copy, ISR data under a critical section).
+FIELD_FP_REGRESSION_C = """#include "FreeRTOS.h"
+#include "task.h"
 #include <string.h>
-portMUX_TYPE g_live_lock = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t g_live;
-static void on_event_handler(int ev) { fd_uart_printf("ev %d", ev); }
-static const app_callbacks_t s_app_cbs = { .on_event = on_event_handler };   /* not an ESP-IDF driver struct */
+static void on_event_handler(int ev) { app_log("ev %d", ev); }
+static const app_callbacks_t s_app_cbs = { .on_event = on_event_handler };   /* application struct, not an ISR */
 void fd_copy(char *dst, const char *src)
 {
     if (strlen(src) >= FD_LINE_MAX) { return; }
     strcpy(dst, src);                                                     /* bounded above */
 }
-static void IRAM_ATTR timer_isr(void *arg)
+void TIM2_IRQHandler(void)
 {
-    portENTER_CRITICAL_ISR(&g_live_lock);
-    g_live++;                                                             /* protected by the spinlock */
-    portEXIT_CRITICAL_ISR(&g_live_lock);
+    UBaseType_t saved = taskENTER_CRITICAL_FROM_ISR();
+    g_live++;                                                             /* protected by the critical section */
+    taskEXIT_CRITICAL_FROM_ISR(saved);
 }
-void legacy(char *d, const char *s)
-{
-    strcat(d, s); /* fwkit-ignore EMB-002: d is sized for the longest s */
-}
-"""
-FIELD_FP_REGRESSION_H = """\
-#include "freertos/FreeRTOS.h"
-extern portMUX_TYPE g_live_lock;
 """
 
 
 class RtosRules(Base):
+    def test_real_project_false_positives(self):
+        import rtos_check
+        from fwlib import DEFAULT_CONFIG
+        src = textwrap.dedent("""\
+            #include "cmsis_os.h"
+            static ctx_t s_ctx = {
+                .rx = NULL,
+            };
+            int add_interface(void)
+            {
+                ctx_t *c = &s_ctx;
+                c->rx = NULL;
+                xTaskCreate(rx_thread, "rx", 256, &s_ctx, 3, NULL);
+                return 0;
+            }
+            void StartPeriodicTask(void *argument)
+            {
+            #ifdef ENABLE_X
+                x_task(argument);
+            #else
+                board_periodic_task(argument);
+            #endif
+            }
+            void start(void) { osThreadNew(StartPeriodicTask, NULL, NULL); }
+            void Error_Handler(void)
+            {
+                __disable_irq();
+                while (1)
+                {
+                }
+            }
+            """)
+        found = {f.rule for f in rtos_check.check_source(src, DEFAULT_CONFIG)}
+        for rule in ("RTOS-062", "RTOS-071", "RTOS-121", "RTOS-047"):
+            self.assertNotIn(rule, found)
+
     def test_field_report_false_positives(self):
         import rtos_check
         import fw_lint
         from fwlib import DEFAULT_CONFIG
         cfg = dict(DEFAULT_CONFIG)
         found = [str(f) for f in fw_lint.lint_source(FIELD_FP_REGRESSION_C, cfg) +
-                 rtos_check.check_source(FIELD_FP_REGRESSION_C, cfg) + rtos_check.check_source(FIELD_FP_REGRESSION_H, cfg)]
-        self.assertEqual([f for f in found if any(r in f for r in ("RTOS-011", "RTOS-110", "EMB-013", "EMB-002", "EMB-011"))], [])
-
-    def test_esp_driver_callback_struct_is_isr(self):
-        import rtos_check
-        from fwlib import DEFAULT_CONFIG
-        src = textwrap.dedent("""\
-            #include "driver/gptimer.h"
-            static bool on_alarm(gptimer_handle_t t, const gptimer_alarm_event_data_t *e, void *ctx) { xQueueSend(q, &e, 0); return false; }
-            void setup(void) { gptimer_event_callbacks_t cbs = { .on_alarm = on_alarm }; gptimer_register_event_callbacks(t, &cbs, NULL); }
-            """)
-        self.assertIn("RTOS-011", {f.rule for f in rtos_check.check_source(src, DEFAULT_CONFIG)})
-
-    def test_suppression_comment(self):
-        import fw_lint
-        from fwlib import DEFAULT_CONFIG
-        src = "void f(char *d, const char *s)\n{\n    // fwkit-ignore EMB-002\n    strcpy(d, s);\n    strcpy(d, s);\n}\n"
-        lines = [f.line for f in fw_lint.lint_source(src, DEFAULT_CONFIG) if f.rule == "EMB-002"]
-        self.assertEqual(lines, [5])
+                 rtos_check.check_source(FIELD_FP_REGRESSION_C, cfg)]
+        self.assertEqual([f for f in found if any(r in f for r in ("RTOS-011", "EMB-013", "EMB-002", "EMB-011"))], [])
 
     def test_no_regression_false_positives(self):
         import rtos_check
@@ -483,27 +485,6 @@ class RtosRules(Base):
     def test_good_code_has_no_findings(self):
         bad = [str(f) for f in self.rules(RTOS_GOOD) if f.sev != "info"]
         self.assertEqual(bad, [])
-
-    def test_esp_rules(self):
-        src = """\
-            #include "freertos/FreeRTOS.h"
-            #include "esp_log.h"
-            static portMUX_TYPE s_mux;
-            static void IRAM_ATTR gpio_isr(void *arg) { portENTER_CRITICAL(&s_mux); ESP_LOGI("x", "y"); portEXIT_CRITICAL(&s_mux); }
-            void app_main(void)
-            {
-                gpio_isr_handler_add(4, gpio_isr, NULL);
-                xTaskCreate(task_a, "a", 512, NULL, 5, NULL);
-                vTaskStartScheduler();
-            }
-            """
-        import rtos_check
-        import fw_lint
-        from fwlib import DEFAULT_CONFIG
-        found = {f.rule for f in rtos_check.check_source(textwrap.dedent(src), DEFAULT_CONFIG)}
-        self.assertTrue({"RTOS-045", "RTOS-110", "RTOS-009", "RTOS-125"} <= found, found)
-        emb = {f.rule for f in fw_lint.lint_source(textwrap.dedent(src), DEFAULT_CONFIG)}
-        self.assertIn("EMB-011", emb)   # ESP_LOGI in ISR
 
     def test_cmsis_rules(self):
         src = """\
@@ -569,20 +550,14 @@ class SessionContext(Base):
         for needle in ("STM32G474RE", "make -j", "rtos=freertos", "Working rules", "thread-safe", "UART DMA timeout"):
             self.assertIn(needle, ctx)
 
-    def test_esp_family_detected(self):
-        self.write("sdkconfig", "CONFIG_IDF_TARGET=\"esp32s3\"\n")
+    def test_samv71_family_detected(self):
+        self.write("inc/samv71q21b.h", "/* device header */\n")
         ctx = run_hook("session_context.py", {"hook_event_name": "SessionStart"}, self.proj)["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("family=esp32", ctx)
+        self.assertIn("family=samv71", ctx)
 
 
 # ------------------------------------------------------------------ tools
 class Tools(Base):
-    def test_decoder(self):
-        out = subprocess.run([sys.executable, DECODER, "--cfsr", "0x00009200", "--bfar", "0x10", "--hfsr", "0x40000000",
-                              "--exc-return", "0xFFFFFFFD"], capture_output=True, text=True).stdout
-        for needle in ("STKERR", "PRECISERR", "NULL pointer", "FORCED", "PSP", "Thread"):
-            self.assertIn(needle, out)
-
     def test_build_info(self):
         os.makedirs(os.path.join(self.proj, "build"))
         db = [{"directory": os.path.join(self.proj, "build"), "file": "../src/%s.c" % n,
@@ -597,14 +572,11 @@ class Tools(Base):
         r = run_tool("build_info.py", ["--file", "src/uart.c"], self.proj)
         self.assertIn("fpv5-d16", r.stdout)
 
-    def test_fw_analyze_lint_and_sarif(self):
+    def test_fw_analyze_lint(self):
         self.write("src/a.c", RTOS_BAD)
-        r = run_tool("fw_analyze.py", ["--all", "--tools", "lint", "--sarif", "out.sarif"], self.proj)
+        r = run_tool("fw_analyze.py", ["--all", "--tools", "lint"], self.proj)
         self.assertIn("RTOS-014", r.stdout)
-        with open(os.path.join(self.proj, "out.sarif")) as f:
-            sarif = json.load(f)
-        self.assertEqual(sarif["version"], "2.1.0")
-        self.assertTrue(sarif["runs"][0]["results"])
+        self.assertEqual(r.returncode, 1)
 
     def test_style_probe(self):
         self.write("src/uart_drv.c", """\
@@ -629,16 +601,13 @@ class Tools(Base):
         self.assertIn("uart_", r.stdout)
         self.assertIn("4 spaces", r.stdout)
 
-    def test_example_project_is_clean_and_traced(self):
+    def test_example_project_is_clean(self):
         src = os.path.join(ROOT, "examples", "sensor-node")
         dst = os.path.join(self.proj, "sensor-node")
         shutil.copytree(src, dst)
         r = run_tool("fw_analyze.py", ["--all", "--tools", "lint"], dst)
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertIn("findings: none", r.stdout)
-        r = run_tool("trace_check.py", ["--reqs", "docs/requirements.csv"], dst)
-        self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertIn("requirements: 7 | with code: 7 | with tests: 7", r.stdout)
 
     def test_trace_gaps_reported(self):
         self.write("docs/reqs.csv", "id,title\nREQ-1,a\nREQ-2,b\n")
@@ -648,6 +617,29 @@ class Tools(Base):
         self.assertEqual(r.returncode, 1)
         self.assertIn("NOT IMPLEMENTED (no @req tag) [1]: REQ-2", r.stdout)
         self.assertIn("UNKNOWN IDs referenced in tags [1]: REQ-9", r.stdout)
+
+    def test_trace_without_tests_is_optional(self):
+        self.write("docs/reqs.csv", "id,title\nREQ-1,a\n")
+        self.write("src/a.c", "/* @req REQ-1 */\nvoid a(void) {}\n")
+        self.assertEqual(run_tool("trace_check.py", ["--reqs", "docs/reqs.csv"], self.proj).returncode, 0)
+        r = run_tool("trace_check.py", ["--reqs", "docs/reqs.csv", "--require-tests"], self.proj)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("NOT VERIFIED", r.stdout)
+
+    def test_escaped_define_is_kept_intact(self):
+        from build_info import norm_args, split_cmd
+        args = split_cmd({"command": 'arm-none-eabi-gcc -DVERSION=\\"1.0.0\\" -DX=1 -c a.c'})
+        self.assertEqual(norm_args(args, ".")["defines"], ['VERSION="1.0.0"', "X=1"])
+
+    def test_analysis_limited_to_the_build(self):
+        self.write("src/app.c", "void app(void) { char *p = malloc(4); (void)p; }\n")
+        self.write("lib/port_posix/q.c", "void q(void) { char *p = malloc(4); (void)p; }\n")
+        self.write("build/compile_commands.json", json.dumps(
+            [{"directory": self.proj, "file": "src/app.c", "command": "arm-none-eabi-gcc -c src/app.c"}]))
+        r = run_tool("fw_analyze.py", ["--all", "--tools", "lint"], self.proj)
+        self.assertIn("app.c", r.stdout)
+        self.assertNotIn("q.c", r.stdout)
+        self.assertIn("1 source file(s) outside the build", r.stdout)
 
     def test_cross_file_isr_propagation(self):
         self.write("src/isr.c", "void USART1_IRQHandler(void) { uart_on_byte(); }\n")

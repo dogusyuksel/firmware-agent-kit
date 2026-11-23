@@ -8,8 +8,6 @@
 
   "build": "cmake --build build --parallel",
   "clean": "cmake --build build --target clean",
-  "flash": "openocd -f interface/stlink.cfg -f target/stm32g4x.cfg -c \"program build/app.elf verify reset exit\"",
-  "debug_server": "openocd -f interface/stlink.cfg -f target/stm32g4x.cfg",
   "elf": "build/app.elf",
   "map": "build/app.map",
   "compile_commands": "build/compile_commands.json",
@@ -18,7 +16,6 @@
   "size_budget": { "flash_pct_warn": 85, "ram_pct_warn": 85, "flash_pct_max": 98, "ram_pct_max": 95 },
 
   "rtos": { "type": "freertos", "api": "cmsis-rtos2", "config_header": "Core/Inc/FreeRTOSConfig.h" },
-  "test": { "unit": "ceedling test:all", "integration": "renode-test tests/integration/app.robot" },
 
   "datasheets": ["docs/datasheet.pdf", "docs/reference-manual.pdf", "docs/errata.pdf", "docs/schematic.pdf"],
   "notes": "Console: USART2 PA2/PA3 115200 8N1. HSE = 24 MHz.",
@@ -28,7 +25,7 @@
     "forbid_dynamic_alloc": true,
     "_comment_isr_functions": "extra regexes for functions that run in interrupt context (callbacks registered at runtime)",
     "isr_functions": [],
-    "isr_forbidden_calls": ["printf", "sprintf", "snprintf", "puts", "malloc", "calloc", "realloc", "free", "HAL_Delay", "delay_ms", "delay_us", "ESP_LOGE", "ESP_LOGW", "ESP_LOGI", "ESP_LOGD", "ESP_LOGV"]
+    "isr_forbidden_calls": ["printf", "sprintf", "snprintf", "puts", "malloc", "calloc", "realloc", "free", "HAL_Delay", "delay_ms", "delay_us"]
   },
 
   "_comment_format": "on_edit=true clang-formats the edited lines after every edit (needs clang-format + .clang-format)",
@@ -52,6 +49,6 @@
     "deny_patterns": [],
     "_comment_vendor_edits": "ask | deny | allow - edits under protected_paths",
     "vendor_edits": "ask",
-    "protected_paths": ["Drivers/CMSIS/", "Drivers/STM32", "_HAL_Driver/", "Middlewares/Third_Party/", "managed_components/", "esp-idf/", "hal/sam", "/packs/", "config/default/peripheral/", "vendor/", "third_party/", "thirdparty/", "external/"]
+    "protected_paths": ["Drivers/CMSIS/", "Drivers/STM32", "_HAL_Driver/", "Middlewares/Third_Party/", "hal/sam", "/packs/", "config/default/peripheral/", "vendor/", "third_party/", "thirdparty/", "external/"]
   }
 }

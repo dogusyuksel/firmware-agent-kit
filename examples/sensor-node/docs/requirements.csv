@@ -1,8 +1,0 @@
-id,title
-SN-RB-001,The receive buffer stores bytes in FIFO order without locks
-SN-RB-002,A full buffer rejects new bytes and counts the overrun
-SN-FP-001,The parser resynchronises on the next start-of-frame byte after any error
-SN-FP-002,Frames longer than FRAME_MAX_PAYLOAD are rejected
-SN-FP-003,Frames use CRC-16/CCITT-FALSE over length and payload
-SN-COM-001,Received bytes are buffered in the ISR and the comm task is woken
-SN-COM-002,Statistics can be read consistently from any task

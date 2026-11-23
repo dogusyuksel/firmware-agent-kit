@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
-"""Run the available static analyzers on firmware sources and print ONE compact report (or SARIF).
+"""Run the available static analyzers on firmware sources and print ONE compact report.
 
 Tools (each optional, skipped with a note if not installed - all free/open source):
   lint       kit embedded lint (EMB-xxx) + RTOS rules (RTOS-xxx)        always available
   rtos       project-level RTOS rules (FreeRTOSConfig.h, NVIC prio, heap scheme)
   cppcheck   cppcheck (+ --misra: MISRA C:2012 addon)
   clang-tidy clang-analyzer / bugprone / cert checks
-  frama-c    Frama-C EVA (run only when asked: slow)
   format     clang-format check of changed lines
 
   python fw_analyze.py                          # changed files vs HEAD, changed lines only
   python fw_analyze.py --all                    # every project source (vendor excluded), all lines
   python fw_analyze.py src/uart.c --tools cppcheck,clang-tidy --misra
-  python fw_analyze.py --all --tools frama-c src/crc.c
-  python fw_analyze.py --sarif out.sarif        # for CI / IDE (GitHub code scanning, VS Code SARIF viewer)
 """
 
 import argparse
@@ -28,8 +25,8 @@ import fw_lint  # noqa: E402
 import rtos_check  # noqa: E402
 from build_info import norm_args, split_cmd  # noqa: E402
 from fwfmt import format_file  # noqa: E402
-from fwlib import (C_EXTS, find_compile_commands, from_wsl_path, git_changed_files, git_changed_lines,  # noqa: E402
-                   is_protected, load_config, rel, resolve_tool, run)
+from fwlib import (C_EXTS, find_compile_commands, git_changed_files, git_changed_lines,  # noqa: E402
+                   is_protected, load_config, rel, run, which)
 
 # Integer->float narrowing (e.g. a 12-bit ADC value into float) is lossless and very common in firmware.
 TIDY_OPTIONS = ("CheckOptions: [{key: bugprone-narrowing-conversions.WarnOnIntegerToFloatingPointNarrowingConversion, "
@@ -39,6 +36,7 @@ DEFAULT_TIDY_CHECKS = ("-*,clang-analyzer-*,bugprone-*,cert-*,misc-redundant-exp
                        "-cert-dcl37-c,-cert-dcl51-cpp,-bugprone-signed-bitwise")
 # bugprone-signed-bitwise fires on every `(uint16_t)u8 << 8` (integer promotion) - pure noise in firmware;
 # essential-type issues are covered by the MISRA addon instead.
+TOOL_NOTES = []   # problems with the tools themselves (broken install, skipped files) - always shown
 MISSING_INCLUDE_RE = re.compile(r"file not found|cannot open source file", re.I)
 
 
@@ -104,100 +102,79 @@ def run_rtos_project(proj, cfg):
 
 
 def run_cppcheck(files, db, cfg, misra):
-    exe, conv = resolve_tool("cppcheck")
+    exe = which("cppcheck")
     if not exe:
         return None
     incs, defs = flags_for(files, db)
-    cmd = exe + ["--enable=warning,style,performance,portability", "--inline-suppr", "--quiet",
+    cmd = [exe] + ["--enable=warning,style,performance,portability", "--inline-suppr", "--quiet",
            "--platform=unix32", "--suppress=missingIncludeSystem", "--suppress=unmatchedSuppression",
            "--template={file}:{line}:{severity}:{id}:{message}"]
-    cmd += ["-I" + conv(i) for i in incs[:200]] + ["-D" + d for d in defs[:200]]
+    cmd += ["-I" + i for i in incs[:200]] + ["-D" + d for d in defs[:200]]
+    if any(i["compiler"].endswith("gcc") for i in db.values()):
+        cmd.append("-D__GNUC__")   # CMSIS/vendor headers #error out on an unknown compiler
     tmp = None
     if misra:
         rules = (cfg.get("analysis") or {}).get("misra_rules_file")
         if rules:
             tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
-            json.dump({"script": "misra.py", "args": ["--rule-texts=" + conv(os.path.abspath(rules))]}, tmp)
+            json.dump({"script": "misra.py", "args": ["--rule-texts=" + os.path.abspath(rules)]}, tmp)
             tmp.close()
-            cmd.append("--addon=" + conv(tmp.name))
+            cmd.append("--addon=" + tmp.name)
         else:
             cmd.append("--addon=misra")
-    rc, out, err = run(cmd + [conv(f) for f in files], timeout=900)
+    rc, out, err = run(cmd + list(files), timeout=900)
     if tmp:
         os.unlink(tmp.name)
+    text = err + "\n" + out
+    if "failedToLoadCfg" in text or "installation is broken" in text:
+        TOOL_NOTES.append("cppcheck: the installation is broken (cannot load std.cfg) - no results; reinstall cppcheck")
+    bail = [l for l in text.splitlines() if "Bailing out" in l or "internal error" in l]
+    if bail:
+        TOOL_NOTES.append("cppcheck: {} file(s) skipped after internal errors, e.g. {}".format(len(bail), bail[0].strip()[:140]))
     items = []
     for line in (err + "\n" + out).splitlines():
         m = re.match(r"^(.+?):(\d+):(\w+):([\w\-.]+):(.*)$", line.strip())
         if m and m.group(3) != "information":
             sev = "error" if m.group(3) == "error" else "warn"
             rule = m.group(4) if not m.group(4).startswith("misra") else m.group(4).replace("misra-c2012-", "MISRA-")
-            items.append(Item("cppcheck", from_wsl_path(m.group(1)), m.group(2), sev, rule, m.group(5).strip()))
+            items.append(Item("cppcheck", m.group(1), m.group(2), sev, rule, m.group(5).strip()))
     return items
 
 
 def run_clang_tidy(files, cc, cfg, db=None):
-    exe, conv = resolve_tool("clang-tidy")
+    exe = which("clang-tidy")
     if not exe:
         return None
-    in_wsl = exe[0] == "wsl"
-    cmd = exe + ["--quiet"]
-    if cc and not in_wsl:          # a Windows compile DB is useless inside WSL; pass flags explicitly instead
+    cmd = [exe] + ["--quiet"]
+    if cc:
         cmd += ["-p", os.path.dirname(cc)]
     if not os.path.isfile(os.path.join(os.getcwd(), ".clang-tidy")):
         checks = (cfg.get("analysis") or {}).get("clang_tidy_checks") or DEFAULT_TIDY_CHECKS
         cmd += ["--config={Checks: '" + checks + "', " + TIDY_OPTIONS + "}"]
     prefix = cfg.get("toolchain_prefix") or ""
+    if not prefix and any("arm-none-eabi" in i["compiler"] for i in (db or {}).values()):
+        prefix = "arm-none-eabi-"
     if "arm-none-eabi" in prefix:
         cmd += ["--extra-arg=--target=arm-none-eabi"]
+        gcc = which(prefix + "gcc")
+        if gcc:
+            _, sysroot, _ = run([gcc, "-print-sysroot"], timeout=20)
+            if sysroot.strip() and os.path.isdir(sysroot.strip()):
+                cmd += ["--extra-arg=--sysroot=" + os.path.normpath(sysroot.strip())]   # newlib headers (stdio.h ...)
     cmd += ["--extra-arg=-Wno-unknown-warning-option", "--extra-arg=-Wno-unused-command-line-argument"]
     items = []
     for f in files:
         tail = []
-        if not cc or in_wsl:
+        if not cc:
             incs, defs = flags_for([f], db or {}, None if db else header_dirs(os.getcwd(), cfg))
-            tail = ["--"] + ["-I" + conv(i) for i in incs] + ["-D" + d for d in defs]
-        rc, out, err = run(cmd + [conv(f)] + tail, timeout=600)
+            tail = ["--"] + ["-I" + i for i in incs] + ["-D" + d for d in defs]
+        rc, out, err = run(cmd + [f] + tail, timeout=600)
         for line in out.splitlines():
             m = re.match(r"^(.+?):(\d+):\d+:\s+(warning|error):\s+(.*?)\s+\[([\w\-.,]+)\]$", line.strip())
             if m:
-                items.append(Item("clang-tidy", from_wsl_path(m.group(1)), m.group(2), "error" if m.group(3) == "error" else "warn",
+                items.append(Item("clang-tidy", m.group(1), m.group(2), "error" if m.group(3) == "error" else "warn",
                                   m.group(5), m.group(4)))
     return items
-
-
-def run_framac(files, db):
-    exe, conv = resolve_tool("frama-c")
-    if not exe:
-        return None
-    incs, defs = flags_for(files, db)
-    cpp = " ".join(["-I" + conv(i) for i in incs] + ["-D" + d for d in defs])
-    cmd = exe + ["-eva", "-eva-precision", "1", "-eva-no-show-progress", "-machdep", "gcc_x86_32"]
-    if cpp:
-        cmd += ["-cpp-extra-args=" + cpp]
-    rc, out, err = run(cmd + [conv(f) for f in files], timeout=1800)
-    items = []
-    for line in (out + "\n" + err).splitlines():
-        m = re.match(r"^\[(eva:alarm|eva|kernel)[^\]]*\]\s+(.+?):(\d+):\s*(Warning|Error)?:?\s*(.*)$", line.strip())
-        if m:
-            sev = "error" if m.group(4) == "Error" else "warn"
-            items.append(Item("frama-c", from_wsl_path(m.group(2)), m.group(3), sev, m.group(1), m.group(5).strip()))
-    return items
-
-
-def to_sarif(items, proj):
-    rules = {}
-    results = []
-    for it in items:
-        rid = "{}/{}".format(it.tool, it.rule)
-        rules.setdefault(rid, {"id": rid, "shortDescription": {"text": it.rule}})
-        results.append({"ruleId": rid, "level": {"error": "error", "warn": "warning"}.get(it.sev, "note"),
-                        "message": {"text": it.msg},
-                        "locations": [{"physicalLocation": {"artifactLocation": {"uri": rel(it.file, proj)},
-                                                            "region": {"startLine": max(1, it.line)}}}]})
-    return {"version": "2.1.0", "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
-            "runs": [{"tool": {"driver": {"name": "firmware-agent-kit", "informationUri":
-                                          "https://github.com/dogusyuksel/firmware-agent-kit", "rules": list(rules.values())}},
-                      "results": results}]}
 
 
 def main():
@@ -205,10 +182,9 @@ def main():
     ap.add_argument("files", nargs="*")
     ap.add_argument("--all", action="store_true", help="all project sources and all lines")
     ap.add_argument("--all-lines", action="store_true", help="report unchanged lines too")
-    ap.add_argument("--tools", help="comma list: lint,rtos,cppcheck,clang-tidy,frama-c,format")
+    ap.add_argument("--tools", help="comma list: lint,rtos,cppcheck,clang-tidy,format")
     ap.add_argument("--misra", action="store_true")
     ap.add_argument("--max", type=int, default=40)
-    ap.add_argument("--sarif", metavar="FILE")
     args = ap.parse_args()
 
     proj = os.getcwd()
@@ -219,10 +195,15 @@ def main():
         tools.append("rtos")
     misra = args.misra or acfg.get("misra")
 
+    scope = rtos_check.build_scope(proj, cfg)
     if args.files:
         files = args.files
     elif args.all:
-        files = [p for p in rtos_check.find_files(proj, exts=C_EXTS)]
+        found = [p for p in rtos_check.find_files(proj, exts=C_EXTS) if not is_protected(rel(p, proj), cfg)]
+        files = [p for p in found if rtos_check.in_scope(p, scope)]
+        if len(files) < len(found):
+            TOOL_NOTES.append("{} source file(s) outside the build (not in compile_commands.json) skipped".format(
+                len(found) - len(files)))
     else:
         files = git_changed_files(proj)
     files = [f for f in files if f.lower().endswith(C_EXTS) and os.path.isfile(f) and not is_protected(rel(os.path.abspath(f), proj), cfg)]
@@ -234,7 +215,7 @@ def main():
     db = load_db(cc)
     rc_vals, _ = rtos_check.load_rtos_config(proj, cfg)
     if args.all:
-        isr_map = rtos_check.global_isr_map(proj, cfg, rtos_check.project_sources(proj, cfg))
+        isr_map = rtos_check.global_isr_map(proj, cfg, rtos_check.project_sources(proj, cfg, scope))
         rtos_check._store(proj, "isr_funcs", isr_map)
     else:
         isr_map = rtos_check.cached_isr_map(proj)
@@ -245,7 +226,6 @@ def main():
         "rtos": lambda: run_rtos_project(proj, cfg),
         "cppcheck": lambda: run_cppcheck(srcs, db, cfg, misra) if srcs else [],
         "clang-tidy": lambda: run_clang_tidy(srcs, cc, cfg, db) if srcs else [],
-        "frama-c": lambda: run_framac(srcs, db) if srcs else [],
     }
     for t in tools:
         t = t.strip()
@@ -267,9 +247,10 @@ def main():
         else:
             missing = [i for i in res if MISSING_INCLUDE_RE.search(i.msg)]
             if missing:
-                notes.append("{}: {} file(s) could not be fully parsed (missing includes, e.g. {}) - generate "
-                             "compile_commands.json for accurate results (tools/build_info.py explains how)".format(
-                                 t, len({i.file for i in missing}), missing[0].msg[:60]))
+                hint = ("check the toolchain/include paths in compile_commands.json" if cc else
+                        "generate compile_commands.json for accurate results (tools/build_info.py explains how)")
+                notes.append("{}: {} file(s) could not be fully parsed (missing includes, e.g. {}) - {}".format(
+                    t, len({i.file for i in missing}), missing[0].msg[:60], hint))
             items += [i for i in res if not MISSING_INCLUDE_RE.search(i.msg)]
 
     # keep only changed lines unless asked otherwise
@@ -291,6 +272,8 @@ def main():
         if hidden:
             notes.append("{} finding(s) on unchanged lines hidden (pre-existing; --all-lines to show)".format(hidden))
 
+    # findings inside vendor/third-party headers pulled in by project files are not actionable here
+    items = [i for i in items if i.file == "(project)" or not is_protected(rel(os.path.abspath(i.file), proj), cfg)]
     seen, uniq = set(), []
     for it in sorted(items, key=lambda i: (i.sev != "error", rel(i.file, proj), i.line)):
         k = (rel(it.file, proj), it.line, it.rule)
@@ -298,9 +281,6 @@ def main():
             seen.add(k)
             uniq.append(it)
 
-    if args.sarif:
-        with open(args.sarif, "w", encoding="utf-8") as f:
-            json.dump(to_sarif(uniq, proj), f, indent=1)
     counts = {}
     for it in uniq:
         counts[it.tool] = counts.get(it.tool, 0) + 1
@@ -311,10 +291,8 @@ def main():
         print("{}:{}: {} [{}:{}] {}".format(rel(it.file, proj), it.line, it.sev, it.tool, it.rule, it.msg[:220]))
     if len(uniq) > args.max:
         print("... {} more (--max N)".format(len(uniq) - args.max))
-    for n in notes:
+    for n in TOOL_NOTES + notes:
         print("note: " + n)
-    if args.sarif:
-        print("SARIF written to " + args.sarif)
     return 1 if any(i.sev == "error" for i in uniq) else 0
 
 

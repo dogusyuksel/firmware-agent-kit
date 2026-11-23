@@ -10,7 +10,8 @@ file - any token matching --id-regex is taken as an ID.
   python trace_check.py --reqs docs/requirements.csv            # matrix summary + gaps
   python trace_check.py --reqs docs/srs.md --matrix trace.csv   # also write the full matrix
   python trace_check.py                                         # tags only (no requirements file)
-Exit code 1 if requirements lack implementation/tests or tags reference unknown IDs.
+Exit code 1 if requirements lack implementation or tags reference unknown IDs; missing @verifies tags count
+only with --require-tests or when the project uses @verifies at all.
 """
 
 import argparse
@@ -50,6 +51,7 @@ def main():
     ap.add_argument("--id-regex", default=r"\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-\d+\b")
     ap.add_argument("--matrix", help="write the full trace matrix to this CSV")
     ap.add_argument("--root", default=".")
+    ap.add_argument("--require-tests", action="store_true", help="also fail on requirements without a @verifies tag")
     args = ap.parse_args()
 
     proj = os.path.abspath(args.root)
@@ -78,7 +80,7 @@ def main():
     reqs = load_reqs(args.reqs, id_rx) if args.reqs else {}
     all_ids = sorted(set(reqs) | set(impl) | set(tests))
     no_impl = [r for r in reqs if r not in impl]
-    no_test = [r for r in reqs if r not in tests]
+    no_test = [r for r in reqs if r not in tests] if (args.require_tests or tests) else []
     unknown = sorted((set(impl) | set(tests)) - set(reqs)) if reqs else []
 
     if args.matrix:

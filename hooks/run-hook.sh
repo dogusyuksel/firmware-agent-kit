@@ -1,19 +1,25 @@
 #!/usr/bin/env bash
-# Runs a firmware-agent-kit hook script with the first *working* Python 3.8+.
-#
-# Probing matters: on Windows `python3` is often the Microsoft Store stub that
-# exists on PATH but cannot run anything. Set FWKIT_PYTHON to force a specific
-# interpreter. Hooks fail open: if no Python is found the hook is skipped.
+# Runs a firmware-agent-kit hook script with the first working Python 3.8+.
+# The kit supports Linux only (on Windows, run Claude Code inside WSL). Elsewhere every
+# hook is a no-op except a one-line note at session start. Hooks always fail open.
+# Set FWKIT_PYTHON to force a specific interpreter.
 
 script="$1"
 shift
+
+if [ "$(uname -s 2>/dev/null)" != "Linux" ]; then
+  if [ "$script" = "session_context.py" ]; then
+    echo "firmware-agent-kit supports Linux only; its hooks are disabled here. On Windows, run Claude Code inside WSL."
+  fi
+  exit 0
+fi
 
 root="${CLAUDE_PLUGIN_ROOT:-}"
 if [ -z "$root" ]; then
   root="$(cd "$(dirname "$0")/.." && pwd)"
 fi
 
-for py in "${FWKIT_PYTHON:-}" python3 python py; do
+for py in "${FWKIT_PYTHON:-}" python3 python; do
   [ -z "$py" ] && continue
   command -v "$py" >/dev/null 2>&1 || continue
   if "$py" -c "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)" </dev/null >/dev/null 2>&1; then

@@ -1,7 +1,7 @@
 {
   "name": "firmware-agent-kit",
-  "version": "0.3.2",
-  "description": "Bare-metal and FreeRTOS firmware toolkit for STM32, ESP32 and SAM V71: domain skills, specialist agents, /fw-* commands, RTOS-aware static checks (RTOS-xxx rules, SARIF), open-source analyzers and container toolchains, and safety hooks that block irreversible target operations.",
+  "version": "0.4.0",
+  "description": "Bare-metal and FreeRTOS firmware toolkit for Cortex-M microcontrollers (STM32, SAM V71 reference files): domain skills, specialist agents, /fw-* commands, RTOS-aware static checks (RTOS-xxx rules), open-source analyzers, and safety hooks that block irreversible target operations.",
   "author": {
     "name": "dogusyuksel"
   },
@@ -15,11 +15,8 @@
     "freertos",
     "cmsis",
     "stm32",
-    "esp32",
     "samv71",
     "cortex-m",
-    "misra",
-    "ceedling",
-    "renode"
+    "misra"
   ]
 }

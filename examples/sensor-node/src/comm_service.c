@@ -21,7 +21,7 @@ int comm_init(void)
     return (osal_mutex_create(&s_lock) == OSAL_OK) ? 0 : -1;
 }
 
-/* @req SN-COM-001 Received bytes are buffered in the ISR and the comm task is woken */
+/* Received bytes are buffered in the ISR and the comm task is woken */
 void comm_rx_byte_from_isr(uint8_t byte)
 {
     bool woken = false;
@@ -59,7 +59,7 @@ void comm_process(void)
     }
 }
 
-/* @req SN-COM-002 Statistics can be read consistently from any task */
+/* Statistics can be read consistently from any task */
 int comm_get_stats(comm_stats_t *out, uint32_t timeout_ms)
 {
     if (out == NULL)

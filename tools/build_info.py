@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compact summary of how a firmware project is built - instead of reading huge build files.
 
-Reads compile_commands.json (CMake: -DCMAKE_EXPORT_COMPILE_COMMANDS=ON; ESP-IDF: build/;
+Reads compile_commands.json (CMake: -DCMAKE_EXPORT_COMPILE_COMMANDS=ON;
 Make: `bear -- make` or `compiledb make`) and scans CMakeLists/Makefiles for linker scripts.
 
   python build_info.py                      # auto-find compile_commands.json, summary
@@ -31,9 +31,14 @@ def split_cmd(entry):
         return list(entry["arguments"])
     cmd = entry.get("command", "")
     try:
-        return shlex.split(cmd, posix=(os.name != "nt"))
+        return shlex.split(cmd)
     except ValueError:
         return cmd.split()
+
+
+def unquote(a):
+    """Drop one pair of surrounding quotes; keep quotes that belong to the value (-DVERSION="1.0")."""
+    return a[1:-1] if len(a) > 1 and a[0] == a[-1] == '"' else a
 
 
 def norm_args(args, directory):
@@ -42,8 +47,8 @@ def norm_args(args, directory):
             "opt": None, "std": None, "warn": [], "notable": [], "other": []}
     i = 0
     while i < len(args):
-        a = args[i].strip('"')
-        nxt = args[i + 1].strip('"') if i + 1 < len(args) else ""
+        a = unquote(args[i])
+        nxt = unquote(args[i + 1]) if i + 1 < len(args) else ""
         if a in ("-D", "-I", "-isystem", "-include", "-o", "-c", "-MF", "-MT", "-MQ"):
             if a == "-D":
                 info["defines"].append(nxt)
@@ -110,8 +115,7 @@ def main():
     if not cc or not os.path.isfile(cc):
         print("compile_commands.json not found. Generate it:\n"
               "  CMake  : cmake -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON\n"
-              "  ESP-IDF: idf.py reconfigure  (build/compile_commands.json)\n"
-              "  Make   : bear -- make   |   pip install compiledb && compiledb make\n"
+              "  Make   : bear -- make\n"
               "  STM32CubeIDE: use the CMake export or bear with the headless build")
         ls = linker_scripts(proj)
         if ls:
@@ -160,7 +164,7 @@ def main():
     print("compile db : {} ({} TUs)".format(rel(cc, proj), n))
     print("compiler   : " + ", ".join("{} x{}".format(k, v) for k, v in comp.most_common(3)))
     print("arch       : " + " | ".join("{} x{}".format(k or "-", v) for k, v in arch.most_common(3)))
-    print("opt / std  : {} / {}".format(", ".join(str(k) for k in opt), ", ".join(str(k) for k in std)))
+    print("opt / std  : {} / {}".format(", ".join(k or "(default)" for k in opt), ", ".join(k or "(default)" for k in std)))
     print("notable    : " + " ".join(k for k, _ in notable.most_common()))
     print("warnings   : " + " ".join(k for k, v in warn.most_common() if v == n))
     d_all, d_some, _ = common(defs, 0)

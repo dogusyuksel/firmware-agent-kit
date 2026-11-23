@@ -1,6 +1,6 @@
 ---
 name: freertos
-description: FreeRTOS and CMSIS-RTOS2 usage rules for firmware (vanilla Cortex-M and ESP-IDF SMP) - ISR-safe APIs, interrupt priorities vs configMAX_SYSCALL_INTERRUPT_PRIORITY, scheduler state, critical sections, mutex vs semaphore, timers, queues/notifications, object lifecycle and heap schemes, task stacks. Use when writing, reviewing or debugging code that uses FreeRTOS or cmsis_os2.
+description: FreeRTOS and CMSIS-RTOS2 usage rules for firmware (Cortex-M ports) - ISR-safe APIs, interrupt priorities vs configMAX_SYSCALL_INTERRUPT_PRIORITY, scheduler state, critical sections, mutex vs semaphore, timers, queues/notifications, object lifecycle and heap schemes, task stacks. Use when writing, reviewing or debugging code that uses FreeRTOS or cmsis_os2.
 ---
 
 # FreeRTOS / CMSIS-RTOS2 rules
@@ -11,9 +11,9 @@ The kit checks most of these automatically (`tools/rtos_check.py`, rule IDs `RTO
 | Context | Examples | May block? | API set |
 |---|---|---|---|
 | Before scheduler | `main()` before `vTaskStartScheduler()`/`osKernelStart()` | No | create objects/tasks only |
-| Task | task functions, ESP-IDF `app_main` | Yes | normal API |
+| Task | task functions | Yes | normal API |
 | Timer service task | software timer callbacks | **No** (stalls all timers) | normal API with timeout 0 |
-| ISR | `*_IRQHandler`, STM32 `HAL_*Callback` (IT/DMA mode), ESP `IRAM_ATTR` / registered handlers, functions they call | Never | `...FromISR` only |
+| ISR | `*_IRQHandler`, STM32 `HAL_*Callback` (IT/DMA mode), vendor driver callbacks, functions they call | Never | `...FromISR` only |
 | Critical section / scheduler suspended | between `taskENTER_CRITICAL`/`EXIT`, `vTaskSuspendAll`/`xTaskResumeAll` | Never | no blocking or context-switching calls |
 
 ## ISR rules
@@ -34,7 +34,7 @@ The kit checks most of these automatically (`tools/rtos_check.py`, rule IDs `RTO
 ## Synchronisation
 - Mutex for mutual exclusion (priority inheritance); binary semaphore / notification for signalling. Never use a binary semaphore as a lock (priority inversion).
 - Give a mutex on every path (early returns!). Same task must take and give. Recursive mutex only with `...Recursive` APIs.
-- Critical sections: a few instructions, no loops, no API calls that block or yield. On ESP-IDF (SMP) critical sections need a spinlock: `static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED; portENTER_CRITICAL(&s_lock);` (`_ISR` variants in ISRs). `vTaskSuspendAll()` does not give mutual exclusion against the other core.
+- Critical sections: a few instructions, no loops, no API calls that block or yield.
 - Lock ordering: acquire multiple mutexes in one global order (document it) to avoid deadlock.
 
 ## Objects and memory
@@ -47,9 +47,9 @@ The kit checks most of these automatically (`tools/rtos_check.py`, rule IDs `RTO
 
 ## Tasks
 - Signature `void task(void *arg)`; must never return: `for (;;) { ... }` or `vTaskDelete(NULL)` at the end.
-- Every task loop must block (wait/receive/take/delay); busy loops starve lower priorities and trip the ESP-IDF task watchdog.
+- Every task loop must block (wait/receive/take/delay); busy loops starve lower priorities and the idle task.
 - Periodic work: `xTaskDelayUntil(&last, period)` (no drift), not `vTaskDelay`.
-- Stack depth units: **words** on vanilla FreeRTOS, **bytes** on ESP-IDF. Measure with `uxTaskGetStackHighWaterMark()`; enable `configCHECK_FOR_STACK_OVERFLOW=2` in development.
+- Stack depth is in **words** (not bytes) on FreeRTOS Cortex-M ports. Measure with `uxTaskGetStackHighWaterMark()`; enable `configCHECK_FOR_STACK_OVERFLOW=2` in development.
 - `pvParameters` must point to static/global/heap data. On Cortex-M ports `main()`'s stack (MSP) is reused for interrupts after the scheduler starts.
 - Priorities `< configMAX_PRIORITIES`; keep few distinct levels and document them.
 - Times: `pdMS_TO_TICKS(ms)`, never raw tick numbers; at tick rates < 1000 Hz small values round to 0.
@@ -64,4 +64,4 @@ The kit checks most of these automatically (`tools/rtos_check.py`, rule IDs `RTO
 - Create mutexes with `osMutexPrioInherit` (and `osMutexRecursive` only if needed).
 
 ## Testing RTOS code
-Hide the RTOS behind a thin OSAL (`osal_queue_send(...)`) so business logic is unit-testable with CMock (see `portable-architecture`, `host-unit-test`). Use the FreeRTOS POSIX/Win32 simulator port or Renode for integration tests.
+Hide the RTOS behind a thin OSAL (`osal_queue_send(...)`) so business logic stays portable and can run on the host (see `portable-architecture`).

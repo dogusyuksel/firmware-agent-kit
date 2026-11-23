@@ -19,7 +19,7 @@ Plan this change without editing anything: $ARGUMENTS
    - Memory/timing: <stack/heap/flash/RAM impact, DMA/cache, ISR latency>
    - Hardware facts needing a source: <register/pin/priority + document to check>
    ### Verification
-   - build + /fw-analyze on changed files; unit tests (which); Renode/target test (which); size delta expectation
+   - build + /fw-analyze on changed files; existing project tests, if any; on-target check (which); size delta expectation
    ### Open questions
    - ...
    ```

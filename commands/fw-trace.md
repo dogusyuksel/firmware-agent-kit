@@ -1,6 +1,6 @@
 ---
 description: Requirements traceability report - requirement IDs -> code (@req) -> tests (@verifies), with gaps and an optional CSV matrix
-argument-hint: "[--reqs docs/requirements.csv] [--matrix trace.csv]"
+argument-hint: "[--reqs docs/requirements.csv] [--matrix trace.csv] [--require-tests]"
 ---
 
 Run `python "${CLAUDE_PLUGIN_ROOT}/tools/trace_check.py" $ARGUMENTS` (locate `trace_check.py` with Glob if the variable is not expanded).
@@ -8,7 +8,7 @@ Run `python "${CLAUDE_PLUGIN_ROOT}/tools/trace_check.py" $ARGUMENTS` (locate `tr
 - No requirements file given: look for one (`docs/*req*`, `*SRS*`, `.claude/firmware.json` notes) and ask before assuming.
 - Present the counts and the three gap lists:
   - requirements not implemented;
-  - requirements not verified;
+  - requirements not verified (only when the project uses `@verifies` tags or `--require-tests` is given);
   - unknown IDs referenced in tags.
 
   Explain what is needed to close each gap.

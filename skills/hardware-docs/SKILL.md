@@ -24,7 +24,7 @@ Produce these tables (Markdown) when asked to "read the schematic":
 1. **MCU pin map**: pin | port/GPIO | net name | connected to (refdes.pin) | function (peripheral/AF) | pull-up/down | notes.
 2. **Power**: rails, regulators (part, max current), sequencing, ADC reference, battery/backup domain.
 3. **Clocks**: crystals/oscillators with frequency and load caps (-> HSE/XTAL config).
-4. **Boot/strapping/debug**: STM32 BOOT0/BOOT1, NRST; ESP32 strapping pins (GPIO0/2/5/12/15 on ESP32 - check the variant), EN; SAMV71 ERASE (PB12), JTAG/SWD, TCM/boot via GPNVM; debug connector pinout.
+4. **Boot/strapping/debug**: STM32 BOOT0/BOOT1, NRST; SAMV71 ERASE (PB12), JTAG/SWD, TCM/boot via GPNVM; debug connector pinout.
 5. **External devices**: bus (I2C address with A0..A2 straps, SPI CS pin, UART), interrupt/reset lines, level shifters.
 6. **Risks found**: floating inputs, missing pull-ups on I2C/open-drain, strapping pins with loads, LEDs on boot pins, 5 V on non-tolerant pins.
 Then compare with the firmware's pin configuration and report mismatches (without changing code unless asked).

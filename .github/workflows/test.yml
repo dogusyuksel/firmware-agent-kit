@@ -5,41 +5,28 @@ on:
   workflow_dispatch:
     inputs:
       unit:
-        description: "Unit tests (Linux + Windows, Python 3.12) and Python 3.8 minimum-version check"
+        description: "Unit tests (Linux, Python 3.12) and Python 3.8 minimum-version check"
         type: boolean
         default: true
       example:
-        description: "Example project: Ceedling, traceability, analysis"
+        description: "Example project: analysis (kit lint + cppcheck)"
         type: boolean
         default: true
       calibration:
-        description: "False-positive calibration on official RTOS examples (clones ~200 files)"
-        type: boolean
-        default: false
-      docker:
-        description: "Build arm-dev, renode, frama-c images and run their smoke tests (slow)"
-        type: boolean
-        default: false
-      esp_idf_image:
-        description: "Also build the large esp-idf image (very slow)"
+        description: "False-positive calibration on official RTOS examples (clones the example repositories)"
         type: boolean
         default: false
 
 jobs:
   unit:
     if: inputs.unit
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install ARM toolchain and poppler (Linux)
-        if: runner.os == 'Linux'
+      - name: Install ARM toolchain and poppler
         run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi poppler-utils
       - name: Unit tests
         run: python -m unittest discover -s tests -v
@@ -47,15 +34,16 @@ jobs:
         run: python -c "import json;[json.load(open(p)) for p in ('.claude-plugin/plugin.json','.claude-plugin/marketplace.json','hooks/hooks.json','templates/firmware.json')]"
 
   min-python:
-    # Python 3.8 is gone from setup-python on current runners; test the documented minimum in a container.
+    # setup-python no longer ships 3.8 on current runners; uv provides a standalone 3.8 build.
     if: inputs.unit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
       - name: Unit tests on Python 3.8
-        run: docker run --rm -v "$PWD:/work" -w /work python:3.8-slim sh -c "apt-get update -qq && apt-get install -y -qq git >/dev/null && git config --global --add safe.directory /work && python -m unittest discover -s tests"
+        run: uv run --no-project --python 3.8 python -m unittest discover -s tests
 
-  example-ceedling:
+  example:
     if: inputs.example
     runs-on: ubuntu-latest
     steps:
@@ -63,18 +51,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install Ceedling and cppcheck
-        run: |
-          sudo apt-get update && sudo apt-get install -y ruby gcc cppcheck
-          sudo gem install --no-document ceedling -v 1.0.1
-      - name: Unit tests of the example (validates the Ceedling template)
+      - name: Install cppcheck
+        run: sudo apt-get update && sudo apt-get install -y cppcheck
+      - name: Analysis of the example (must stay finding-free)
         working-directory: examples/sensor-node
-        run: ceedling test:all
-      - name: Traceability and analysis of the example
-        working-directory: examples/sensor-node
-        run: |
-          python ../../tools/trace_check.py --reqs docs/requirements.csv
-          python ../../tools/fw_analyze.py --all --tools lint,cppcheck --sarif analysis.sarif
+        run: python ../../tools/fw_analyze.py --all --tools lint,cppcheck
 
   calibration:
     if: inputs.calibration
@@ -84,38 +65,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: No error-level findings on official FreeRTOS / ESP-IDF / STM32Cube examples
+      - name: No error-level findings on official FreeRTOS / STM32Cube examples
         run: python tests/calibrate_corpus.py --dir "${{ runner.temp }}/corpus"
-
-  docker:
-    if: inputs.docker
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        image: [arm-dev, renode, frama-c]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build ${{ matrix.image }}
-        run: docker build -t fwkit/${{ matrix.image }}:ci -f docker/${{ matrix.image }}/Dockerfile docker/${{ matrix.image }}
-      - name: Smoke test arm-dev (Ceedling example + toolchain)
-        if: matrix.image == 'arm-dev'
-        run: |
-          docker run --rm -v "$PWD:/work" -w /work/examples/sensor-node fwkit/arm-dev:ci ceedling test:all
-          docker run --rm fwkit/arm-dev:ci bash -lc "arm-none-eabi-gcc --version && cppcheck --version && clang-tidy --version && openocd --version"
-      - name: Smoke test renode (build firmware + run the robot test)
-        if: matrix.image == 'renode'
-        run: |
-          docker run --rm -v "$PWD:/work" -w /work/examples/renode-smoke fwkit/renode:ci bash -lc \
-            "mkdir -p build && arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -Os -nostdlib -ffreestanding -T link.ld main.c -o build/smoke.elf && renode-test smoke.robot"
-      - name: Smoke test frama-c
-        if: matrix.image == 'frama-c'
-        run: docker run --rm fwkit/frama-c:ci frama-c -version
-
-  docker-esp-idf:
-    if: inputs.esp_idf_image
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: docker build -t fwkit/esp-idf:ci -f docker/esp-idf/Dockerfile docker/esp-idf
-      - run: docker run --rm fwkit/esp-idf:ci bash -lc "idf.py --version && cppcheck --version"

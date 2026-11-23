@@ -24,13 +24,13 @@ Produce with `/fw-plan` format plus:
 - Out of scope list (vendor code, generated code, unrelated modules).
 - Risks: ISR/RTOS context changes, init order, linker sections/`KEEP`, weak symbols, LTO, generated code regeneration.
 
-## 2. Characterization tests first
-Capture current behaviour before changing structure: host tests (Ceedling) for logic, Renode/target smoke test for boot and I/O. Test what the code *does*, even if odd - behaviour changes are a separate decision.
+## 2. Baseline first
+Record the current state before changing structure: build output, map file (`map_analyzer.py`), analysis findings, and the project's existing tests if it has any. Preserve what the code *does*, even if odd - behaviour changes are a separate decision.
 
 ## 3. Execute in small commits
 - One step = one commit with a message that says what moved and that behaviour is unchanged.
 - Mechanical commits contain no logic edits (reviewers can verify with `git diff -M --stat` / `git log --follow`).
-- After every step: build, unit tests, `fw_analyze.py` on touched files, size comparison:
+- After every step: build, existing tests (if any), `fw_analyze.py` on touched files, size comparison:
   `python <kit>/skills/memory-footprint/scripts/map_analyzer.py baseline.map build/app.map` - pure moves should give (near) zero delta; investigate any change.
 - Keep generated code where the generator expects it (CubeMX `Core/`, Harmony `config/`); wrap it instead of moving it, or the next regeneration breaks the tree.
 - Keep public symbol names stable unless renaming is part of the plan; when renaming, do it in its own commit.

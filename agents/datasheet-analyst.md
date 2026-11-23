@@ -21,7 +21,6 @@ Produce, as requested:
 - **Clocks**: crystals with frequency and load capacitors.
 - **Boot/strapping/debug pins**:
   - STM32: BOOT0, NRST;
-  - ESP32: strapping GPIOs and EN;
   - SAMV71: ERASE (PB12), JTAG/SWD, PB4/PB5 SYSIO.
 - **External devices**: buses, addresses, CS/IRQ/reset lines.
 - **Risks**: floating inputs, missing pull-ups, loads on strapping pins, voltage mismatches.

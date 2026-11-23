@@ -9,3 +9,4 @@ examples/*/snapshots/
 examples/*/robot_output.xml
 examples/*/log.html
 examples/*/report.html
+**/.claude/fwkit-cache.json

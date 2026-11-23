@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.0 - 2026-11-22
+Refocused on writing and adding good code for Cortex-M firmware; generic skills with project-level customization.
+- Linux only: Windows/WSL bridging and Windows/macOS install hints removed. Outside Linux the hooks are disabled and print a one-line note (on Windows, run Claude Code inside WSL).
+- New: `/fw-customize` (project `*-conventions` skill that overrides kit defaults), `/fw-module` (new module in the project's style with a thread-safe API, `templates/module/`), `state-machines` skill.
+- `mcu-family` skill with per-family reference files (`stm32.md`, `samv71.md`) replaces the `stm32`, `samv71` and `esp32` skills. Each customizable skill ends with a "Project customization" section.
+- Removed (out of scope): ESP32 support (skill, rules RTOS-045/110/112/115/122/125 and EMB-010, guards, detection, calibration corpus); testing (Ceedling/Renode skills, `test-engineer`, `/fw-test`, `/fw-itest`, templates); containers (`docker/`, `fw_container.py`, `containers` skill); flashing and debugging (`flash-debug`, `/fw-flash`, `hardfault-debug`, `fault-investigator`, `/fw-fault`, `board-bringup`, `timing-analysis`, `low-power`); bootloader skill; Frama-C; SARIF output; `fwkit-ignore` suppression comments; `templates/CLAUDE.firmware.md`.
+- Missing tools: Claude shows the install command and asks; the user installs it. `fw_doctor --install` removed.
+- Working rules: build once after code changes; never run flash/erase/debug commands; a project conventions skill overrides kit defaults.
+- Target guard reduced to STM32/SAM and common probe tools; it remains a safety net for the project's own flash commands.
+- `trace_check`: missing `@verifies` tags only count with `--require-tests` or when the project uses them.
+- Evals: `samv71-watchdog` replaced by `thread-safe-api`.
+- Calibration: zero error-level findings on 176 official FreeRTOS and STM32CubeF4 example files.
+- Fixes from a field test on an STM32L4 + FreeRTOS + CubeMX project:
+  - `--all` / `--project` analyse only files in `compile_commands.json`, so unbuilt ports, examples and host tools are skipped (with a note).
+  - Defines with escaped quotes (`-DVERSION=\"1.0\"`) are parsed correctly.
+  - cppcheck: a broken installation and files it skips are reported instead of an empty "findings: none". cppcheck also gets `-D__GNUC__` for GCC projects.
+  - clang-tidy receives the arm-none-eabi sysroot (newlib headers).
+  - Findings inside protected (vendor/third-party) headers are dropped.
+  - Fewer false positives:
+    - RTOS-062 on file-scope statics;
+    - RTOS-071 on tasks that hand their argument to another function;
+    - RTOS-121/047 on `Error_Handler`-style fatal paths.
+  - The edit hook lists pre-existing findings once per file per session.
+  - Session markers skip vendor files.
+  - The size hook uses the main RAM region, not the sum of all RAM regions.
+  - `/fw-init` proposes third-party folders for `guard.protected_paths`.
+- CI: the Python 3.8 check uses uv instead of a container.
+
 ## 0.3.2 - 2026-11-22
 - CI is manual-only (workflow_dispatch) with per-job switches to save minutes; Python 3.8 minimum is tested in a python:3.8-slim container (setup-python no longer ships 3.8 for Ubuntu 26.04 runners).
 - renode image: Ubuntu 22.04 + Renode 1.16.0 (the .deb depends on policykit-1 and pre-t64 libraries that Ubuntu 24.04 removed/renamed).

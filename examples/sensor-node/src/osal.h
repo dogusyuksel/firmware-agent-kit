@@ -2,7 +2,7 @@
  * @file osal.h
  * @brief Minimal OS abstraction so application code is portable and unit-testable.
  *
- * Implementations: port/freertos/osal_freertos.c (target), CMock-generated mock (host tests).
+ * Implementations: port/freertos/osal_freertos.c (target); a host build can provide its own.
  * Functions ending in _from_isr are ISR-safe; all others are task-only and may block.
  */
 #ifndef OSAL_H

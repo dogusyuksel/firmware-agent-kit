@@ -2,7 +2,7 @@
 
 #include "osal.h"
 
-/* @req SN-RB-001 The receive buffer stores bytes in FIFO order without locks */
+/* The receive buffer stores bytes in FIFO order without locks */
 void rb_init(ring_buffer_t *rb)
 {
     rb->head = 0u;
@@ -10,7 +10,7 @@ void rb_init(ring_buffer_t *rb)
     rb->overruns = 0u;
 }
 
-/* @req SN-RB-002 A full buffer rejects new bytes and counts the overrun */
+/* A full buffer rejects new bytes and counts the overrun */
 bool rb_put(ring_buffer_t *rb, uint8_t byte)
 {
     uint32_t head = rb->head;

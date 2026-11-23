@@ -9,7 +9,7 @@ enum
     ST_CRC_LO
 };
 
-/* @req SN-FP-003 Frames use CRC-16/CCITT-FALSE over length and payload */
+/* Frames use CRC-16/CCITT-FALSE over length and payload */
 uint16_t frame_crc16(const uint8_t *data, size_t len)
 {
     uint16_t crc = 0xFFFFu;
@@ -48,8 +48,8 @@ static frame_status_t finish(frame_parser_t *p)
     return (crc == p->crc_rx) ? FRAME_OK : FRAME_ERR_CRC;
 }
 
-/* @req SN-FP-001 The parser resynchronises on the next start-of-frame byte after any error */
-/* @req SN-FP-002 Frames longer than FRAME_MAX_PAYLOAD are rejected */
+/* The parser resynchronises on the next start-of-frame byte after any error */
+/* Frames longer than FRAME_MAX_PAYLOAD are rejected */
 frame_status_t frame_parser_feed(frame_parser_t *p, uint8_t byte)
 {
     frame_status_t status = FRAME_INCOMPLETE;

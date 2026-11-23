@@ -83,9 +83,3 @@ Free-running 32-bit indices + mask: no "one slot wasted", correct across wraparo
 - [ ] DMA buffer being written by CPU while DMA reads it? Use double buffering (half/complete callbacks) and cache maintenance on M7.
 - [ ] Peripheral registers configured from both ISR and main (RMW on shared CR registers)?
 - [ ] Release build (`-O2/-Os`) behaviour differs from `-O0`? -> almost always a missing `volatile` or barrier, or UB.
-
-## Debugging intermittent issues
-- Toggle a spare GPIO at ISR entry/exit and watch it on a logic analyser: shows latency, duration, nesting and starvation.
-- DWT cycle counter for timing: `CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk; DWT->CYCCNT = 0; DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;` (not on M0/M0+).
-- Count events/overflows in counters (`g_uart_overruns++`) and expose them over a debug command; do not printf from ISRs.
-- Data watchpoints (`watch var` in GDB, DWT comparators) catch who corrupts a variable.

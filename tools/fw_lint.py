@@ -13,14 +13,14 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cparse import CFile, Finding, call_args, drop_suppressed  # noqa: E402
+from cparse import CFile, Finding, call_args  # noqa: E402
 from fwlib import git_changed_lines, load_config  # noqa: E402
 import rtos_check  # noqa: E402
 
 RAW_REG_RE = re.compile(
     r"\*\s*\(\s*(?!volatile)(?:const\s+)?(?:u?int(?:8|16|32|64)_t|unsigned(?:\s+(?:int|long|char|short))?|int|long)\s*\*\s*\)\s*\(?\s*0x[0-9A-Fa-f]{5,}")
 POLL_RE = re.compile(r"\bwhile\s*\(([^;{}]*)\)\s*(?:;|\{\s*\})")
-TICK_CMP_RE = re.compile(r"\b(\w*[Gg]et_?[Tt]ick\w*|millis|micros|xTaskGetTickCount|osKernelGetTickCount|esp_timer_get_time)\s*\(\s*\)\s*[<>]=?")
+TICK_CMP_RE = re.compile(r"\b(\w*[Gg]et_?[Tt]ick\w*|millis|micros|xTaskGetTickCount|osKernelGetTickCount)\s*\(\s*\)\s*[<>]=?")
 LOCAL_ARRAY_RE = re.compile(
     r"^\s*(?!static\b)(?:const\s+)?(u?int(8|16|32|64)_t|char|unsigned\s+char|float|double|int|uint)\s+\w+\s*\[\s*(\d+)\s*\]", re.M)
 ELEM_SIZE = {"8": 1, "16": 2, "32": 4, "64": 8}
@@ -90,10 +90,6 @@ def lint_source(src, cfg, extra_isr=None):
             add("EMB-007", "warn", m.start(), "{}-byte local array on the stack (task/ISR stacks are small). Make it static or "
                 "check the stack budget (-fstack-usage / uxTaskGetStackHighWaterMark).".format(size))
 
-    for name in cf.esp_registered:
-        if name in cf.funcs and "IRAM_ATTR" not in cf.funcs[name].prefix:
-            add("EMB-010", "warn", cf.funcs[name].start, "ISR handler '{}' has no IRAM_ATTR - it crashes if it runs while the "
-                "flash cache is disabled (required with ESP_INTR_FLAG_IRAM).".format(name))
 
     globals_nv = _file_scope_nonvolatile_vars(code)
     forbidden = lcfg.get("isr_forbidden_calls", [])
@@ -105,8 +101,8 @@ def lint_source(src, cfg, extra_isr=None):
                 add("EMB-011", "error", b0 + c.start(), "{}() in {} '{}' - blocking/non-reentrant. Set a flag, push to a ring "
                     "buffer or notify a task.".format(fn, why, name))
         for c in re.finditer(r"\b(float|double)\b|\b\d+\.\d*f?\b", body):
-            add("EMB-012", "warn", b0 + c.start(), "Floating point in {} '{}' - FPU context cost (ESP32: FPU not allowed in "
-                "ISRs). Prefer fixed-point.".format(why, name))
+            add("EMB-012", "warn", b0 + c.start(), "Floating point in {} '{}' - FPU context cost (lazy stacking, "
+                "larger ISR frames). Prefer fixed-point.".format(why, name))
             break
         reported = set()
         locked = re.search(r"\b(port|task)ENTER_CRITICAL\w*|__disable_irq|xSemaphoreTake\w*|portSET_INTERRUPT_MASK\w*|"
@@ -118,7 +114,7 @@ def lint_source(src, cfg, extra_isr=None):
                 reported.add(g)
                 add("EMB-013", "warn", b0 + w.start(), "'{}' is modified in {} '{}' but not volatile. If other code reads it, "
                     "make it volatile and protect multi-word RMW (critical section / atomic).".format(g, why, name))
-    return drop_suppressed(src, out)
+    return out
 
 
 def lint_file(path, cfg, changed="git", rtos=True, rtos_cfg=None, extra_isr=None):

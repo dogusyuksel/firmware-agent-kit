@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """False-positive calibration: run the kit's checkers on official RTOS example code.
 
-Sparse-clones (read-only, scripts are never executed) FreeRTOS demos, ESP-IDF examples and
+Sparse-clones (read-only, scripts are never executed) FreeRTOS demos and
 STM32CubeF4 FreeRTOS applications into a work directory and prints findings per rule.
 Well-maintained vendor examples should produce no error-level findings; investigate any that appear.
 
@@ -26,9 +26,6 @@ CORPUS = [
     ("freertos", "https://github.com/FreeRTOS/FreeRTOS.git",
      ["FreeRTOS/Demo/Common/Minimal", "FreeRTOS/Demo/CORTEX_M4F_STM32F407ZG-SK",
       "FreeRTOS/Demo/CORTEX_M7_SAMV71_Xplained_AtmelStudio"]),
-    ("esp-idf", "https://github.com/espressif/esp-idf.git",
-     ["examples/system/freertos", "examples/peripherals/gpio", "examples/peripherals/uart",
-      "examples/peripherals/timer_group", "examples/system/esp_timer"]),
     ("cubef4", "https://github.com/STMicroelectronics/STM32CubeF4.git",
      ["Projects/STM32F4-Discovery/Applications/FreeRTOS", "Projects/STM32446E_EVAL/Applications/FreeRTOS"]),
 ]

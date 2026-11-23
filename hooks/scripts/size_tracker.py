@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from fwlib import load_config, post_tool_context, project_dir, read_input, rel, tool  # noqa: E402
 
 BUILD_RE = re.compile(
-    r"\b(make|ninja|cmake\s+--build|west\s+(build|flash)|scons|idf\.py\s+build|pio\s+run|cargo\s+(build|objcopy)|meson\s+compile|headless-build)\b"
+    r"\b(make|ninja|cmake\s+--build|west\s+(build|flash)|scons|pio\s+run|meson\s+compile|headless-build)\b"
 )
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".cache"}
 
@@ -54,7 +54,7 @@ def size_of(elf, cfg):
 
 
 def map_regions(map_path):
-    """Parse 'Memory Configuration' from a GNU ld map -> (flash_bytes, ram_bytes)."""
+    """Parse 'Memory Configuration' from a GNU ld map -> (flash_bytes, main RAM bytes = largest RAM region)."""
     flash = ram = 0
     try:
         with open(map_path, "r", encoding="utf-8", errors="replace") as f:
@@ -72,7 +72,7 @@ def map_regions(map_path):
                 if "FLASH" in name or "ROM" in name:
                     flash += length
                 elif "RAM" in name:
-                    ram += length
+                    ram = max(ram, length)   # .data/.bss live in the main RAM; RAM2/CCM are separate
     except OSError:
         pass
     return flash or None, ram or None
@@ -158,8 +158,6 @@ def main():
 
     msg = "firmware-agent-kit size [{}]: {}  (text={} data={} bss={})".format(
         elf_rel, " | ".join(parts), s["text"], s["data"], s["bss"])
-    if os.path.isfile(os.path.join(proj, "sdkconfig")):
-        msg += "  [ESP-IDF: use `idf.py size` / `idf.py size-components` for the real IRAM/DRAM/flash split]"
     if prev:
         growth = s["flash"] - prev.get("flash", 0)
         if growth > 2048:

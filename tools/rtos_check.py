@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RTOS API usage checker for FreeRTOS (vanilla, ESP-IDF SMP) and CMSIS-RTOS2.
+"""RTOS API usage checker for FreeRTOS and CMSIS-RTOS2 on Cortex-M.
 
 Rule IDs (RTOS-xxx) and their rationale are catalogued in docs/RTOS_RULES.md.
 Heuristic and intra-file (with an intra-file call graph); project mode adds
@@ -16,7 +16,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from cparse import CFile, Finding, call_args, calls, drop_suppressed, match_close  # noqa: E402
+from cparse import CFile, Finding, call_args, calls, match_close  # noqa: E402
 from fwlib import C_EXTS, git_changed_lines, is_protected, load_config, rel  # noqa: E402
 
 # ------------------------------------------------------------------ API tables
@@ -36,7 +36,7 @@ ISR_VARIANT.update({
 NEVER_IN_ISR = (
     "vTaskDelay", "vTaskDelayUntil", "xTaskDelayUntil", "vTaskSuspend", "vTaskSuspendAll", "xTaskResumeAll",
     "ulTaskNotifyTake", "xTaskNotifyWait", "xEventGroupWaitBits", "xEventGroupSync", "xSemaphoreTakeRecursive",
-    "xSemaphoreGiveRecursive", "vTaskDelete", "xTaskCreate", "xTaskCreatePinnedToCore", "vTaskPrioritySet",
+    "xSemaphoreGiveRecursive", "vTaskDelete", "xTaskCreate", "vTaskPrioritySet",
     "pvPortMalloc", "vPortFree", "taskYIELD", "portYIELD", "vQueueDelete", "vSemaphoreDelete",
     "osDelay", "osDelayUntil", "osMutexAcquire", "osMutexRelease", "osThreadFlagsWait", "osEventFlagsWait",
     "osThreadYield", "osThreadNew", "osThreadTerminate", "osKernelLock", "osKernelUnlock", "osThreadSuspend",
@@ -68,17 +68,22 @@ CREATE_KIND = {
 DYNAMIC_CREATE = [k for k in CREATE_KIND if not k.endswith("Static")]
 STATIC_TYPES = ("StaticTask_t", "StaticQueue_t", "StaticSemaphore_t", "StaticTimer_t", "StaticEventGroup_t",
                 "StaticStreamBuffer_t", "StaticMessageBuffer_t", "StackType_t")
-UNCHECKED_RET = ("xTaskCreate", "xTaskCreatePinnedToCore", "xQueueSend", "xQueueSendToBack", "xQueueSendToFront",
+UNCHECKED_RET = ("xTaskCreate", "xQueueSend", "xQueueSendToBack", "xQueueSendToFront",
                  "xQueueReceive", "xSemaphoreTake", "xTimerStart", "xTimerStop", "xTimerReset", "xTimerChangePeriod",
                  "xQueueSendFromISR", "xQueueSendToBackFromISR", "xTimerStartFromISR", "xTimerPendFunctionCallFromISR",
                  "xEventGroupSetBitsFromISR", "osMessageQueuePut", "osSemaphoreAcquire", "osMutexAcquire")
 WDT_FEED = re.compile(r"\b(HAL_IWDG_Refresh|HAL_WWDG_Refresh|LL_IWDG_ReloadCounter|IWDG->KR\s*=|WDT_Restart|wdt_reset|"
-                      r"esp_task_wdt_reset|WDT->WDT_CR\s*=)")
+                      r"WDT->WDT_CR\s*=)")
 DEPRECATED = {"xTaskHandle": "TaskHandle_t", "xQueueHandle": "QueueHandle_t", "xSemaphoreHandle": "SemaphoreHandle_t",
               "xTimerHandle": "TimerHandle_t", "portTICK_RATE_MS": "portTICK_PERIOD_MS / pdMS_TO_TICKS()",
               "vSemaphoreCreateBinary": "xSemaphoreCreateBinary (starts EMPTY - give once if needed)",
               "portBASE_TYPE": "BaseType_t", "xTimeOutType": "TimeOut_t", "xMemoryRegion": "MemoryRegion_t"}
 FOREVER_RE = re.compile(r"\bfor\s*\(\s*;\s*;\s*\)|\bwhile\s*\(\s*(?:1|1U|true|TRUE|pdTRUE)\s*\)")
+def fatal_handler(name, body):
+    """Error_Handler / assert / fault paths that mask interrupts and stop forever."""
+    return bool(re.search(r"error|fault|panic|assert|abort|halt|fatal", name, re.I) and FOREVER_RE.search(body))
+
+
 TASK_END_RE = re.compile(r"\bvTaskDelete\s*\(|\bosThreadExit\s*\(")
 BLOCKING_ANY = tuple(TIMEOUT_ARG) + ALWAYS_BLOCKING + ("vTaskSuspend",)
 
@@ -160,9 +165,6 @@ def check_source(src, cfg, rtos_cfg=None, extra_isr=None):
         for api, at, paren in calls(body, list(NEVER_IN_ISR)):
             add("RTOS-015", "error", b0 + at, "{}() must never be called from {} '{}' (blocks or not ISR-safe). "
                 "Defer to a task (notification/queue).".format(api, why, name))
-        if cf.is_esp:
-            for api, at, _ in calls(body, ["portENTER_CRITICAL", "portEXIT_CRITICAL"]):
-                add("RTOS-045", "error", b0 + at, "{}() in ISR '{}' - use {}_ISR() on ESP-IDF.".format(api, name, api))
         for api, at, paren in calls(body, ["xSemaphoreGiveFromISR", "xSemaphoreTakeFromISR", "xSemaphoreGive",
                                            "xSemaphoreTake", "osMutexAcquire", "osMutexRelease"]):
             args, _ = call_args(body, paren)
@@ -227,6 +229,7 @@ def check_source(src, cfg, rtos_cfg=None, extra_isr=None):
                         r"for|while|" + "|".join(re.escape(a) for a in CONTEXT_SWITCHING) + r")\b\s*(\()?")
     for f in cf.funcs.values():
         b0, body = f.body_start, cf.body(f)
+        fatal = fatal_handler(f.name, body)
         lock_wrapper = re.search(r"lock|acquire|take|enter|begin", f.name, re.I) is not None
         crit = susp = irq = 0
         held = {}       # handle -> take idx
@@ -246,9 +249,6 @@ def check_source(src, cfg, rtos_cfg=None, extra_isr=None):
             elif t == "__enable_irq":
                 irq = max(0, irq - 1)
             elif t == "vTaskSuspendAll":
-                if cf.is_esp:
-                    add("RTOS-112", "warn", b0 + at, "vTaskSuspendAll() on ESP-IDF (SMP) does not stop the other core and "
-                        "does not mask ISRs - use a mutex or portENTER_CRITICAL(&spinlock) for mutual exclusion.")
                 susp += 1
             elif t == "xTaskResumeAll":
                 susp = max(0, susp - 1)
@@ -261,7 +261,7 @@ def check_source(src, cfg, rtos_cfg=None, extra_isr=None):
                     add("RTOS-029", "error", b0 + at, "return in '{}' while still holding '{}' (taken at L{}) - "
                         "the mutex is never released on this path.".format(f.name, h, cf.line(b0 + ti)))
             elif t in ("for", "while"):
-                if crit or irq:
+                if (crit or irq) and not fatal:
                     add("RTOS-047", "warn", b0 + at, "Loop inside a critical section in '{}' - keep critical sections "
                         "to a few instructions (interrupt latency).".format(f.name))
             elif m.group(2):
@@ -328,7 +328,11 @@ def check_source(src, cfg, rtos_cfg=None, extra_isr=None):
         f = cf.funcs[name]
         body = cf.body(f)
         loop = FOREVER_RE.search(body)
-        if not loop and not TASK_END_RE.search(body):
+        tail = re.sub(r"^\s*#.*$", "", body[1:-1], flags=re.M).strip()
+        arg = (re.findall(r"(\w+)\s*$", f.params or "") or [""])[0]
+        # a task that ends by handing its parameter to another function (board_task(argument);) delegates its loop
+        delegates = arg not in ("", "void") and re.search(r"\b\w+\s*\([^;]*\b" + arg + r"\b[^;]*\)\s*;$", tail)
+        if not loop and not TASK_END_RE.search(body) and not delegates:
             add("RTOS-071", "warn", f.start, "Task '{}' can return - tasks must loop forever or end with vTaskDelete(NULL) "
                 "(osThreadExit()).".format(name), f.body_end)
         if loop:
@@ -348,28 +352,24 @@ def check_source(src, cfg, rtos_cfg=None, extra_isr=None):
                                     r"\b\w*(_read|_receive|_recv|_wait|_take|Read|Receive|Wait)\w*\s*\(", lbody)
             if not prio_idle and not driver_wait and not any(any(True for _ in calls(t, list(BLOCKING_ANY))) for t in texts):
                 add("RTOS-070", "warn", f.body_start + max(lb, 0), "Task '{}' loop never blocks (no delay/wait/take/receive) - "
-                    "it starves lower-priority tasks and the idle task (which frees deleted-task memory; ESP-IDF task "
-                    "watchdog fires). Ignore if it blocks inside another module.".format(name))
+                    "it starves lower-priority tasks and the idle task (which frees deleted-task memory). Ignore if it blocks inside another module.".format(name))
         if TASK_END_RE.search(body) and re.search(r"\bxSemaphoreTake\s*\(", body) and \
                 len(re.findall(r"\bxSemaphoreTake\s*\(", body)) > len(re.findall(r"\bxSemaphoreGive\s*\(", body)):
             add("RTOS-063", "warn", f.start, "Task '{}' deletes itself with more takes than gives - a held mutex is never "
                 "released (and its priority inheritance never undone).".format(name), f.body_end)
 
     # ---------- creation calls: arguments & return values
-    for m in re.finditer(r"\b(xTaskCreate|xTaskCreatePinnedToCore|xTaskCreateStatic|osThreadNew)\s*\(", code):
+    for m in re.finditer(r"\b(xTaskCreate|xTaskCreateStatic|osThreadNew)\s*\(", code):
         api = m.group(1)
         args, close = call_args(code, m.end() - 1)
         caller = cf.func_at(m.start())
         p_idx, s_idx, pr_idx = (1, None, None) if api == "osThreadNew" else (3, 2, 4)
         if s_idx is not None and len(args) > s_idx and re.match(r"^\d+$", args[s_idx]):
             n = int(args[s_idx])
-            if cf.is_esp and n < 1024:
-                add("RTOS-009", "warn", m.start(), "Stack {} for '{}': ESP-IDF stack depth is in BYTES - {} B is very small "
-                    "(typical >= 2048; printf/ESP_LOG need more).".format(n, args[0], n))
-            elif not cf.is_esp and n < 64:
+            if n < 64:
                 add("RTOS-009", "warn", m.start(), "Stack depth {} words for '{}' is below a safe minimum (configMINIMAL_STACK_SIZE).".format(n, args[0]))
-            elif not cf.is_esp and n >= 4096:
-                add("RTOS-009", "info", m.start(), "Stack depth is in WORDS on vanilla FreeRTOS: {} = {} KB for '{}' - "
+            elif n >= 4096:
+                add("RTOS-009", "info", m.start(), "Stack depth is in WORDS on FreeRTOS: {} = {} KB for '{}' - "
                     "intended?".format(n, n * 4 // 1024, args[0]))
         maxp = rtos_cfg.get("configMAX_PRIORITIES")
         if pr_idx is not None and maxp and len(args) > pr_idx:
@@ -381,7 +381,7 @@ def check_source(src, cfg, rtos_cfg=None, extra_isr=None):
             vm = re.match(r"^\(?\s*(?:\(\s*void\s*\*\s*\)\s*)?&?\s*(\w+)\s*\)?$", pa)
             if vm and pa.lstrip("( void*)").startswith("&") or (vm and re.search(r"\b\w+\s+" + re.escape(vm.group(1)) + r"\s*\[", cf.body(caller))):
                 v = vm.group(1)
-                decl = re.search(r"(^|[;{]\s*)([^;{}()]*?)\b" + re.escape(v) + r"\s*(\[[^\]]*\])?\s*(=[^;]*)?;", cf.body(caller))
+                decl = re.search(r"(^|[;{]\s*)([^;{}()=]*?)\b" + re.escape(v) + r"\s*(\[[^\]]*\])?\s*(=[^;]*)?;", cf.body(caller))
                 if decl and "static" not in decl.group(2) and decl.group(2).strip():
                     sev = "error" if caller.name == "main" else "warn"
                     add("RTOS-062", sev, m.start(), "Task parameter points to local '{}' of '{}'{} - it is gone when the "
@@ -408,7 +408,7 @@ def check_source(src, cfg, rtos_cfg=None, extra_isr=None):
         after = code[cm.end():f.body_end]
         hv = re.escape(h)
         if not re.search(r"(\b|^)" + hv + r"\s*[!=]=\s*NULL|NULL\s*[!=]=\s*" + hv + r"|!\s*\(?\s*" + hv + r"\b|if\s*\(\s*" + hv +
-                         r"\s*\)|(configASSERT|assert|ASSERT|ESP_ERROR_CHECK|FW_ASSERT)\w*\s*\(\s*" + hv, after):
+                         r"\s*\)|(configASSERT|assert|ASSERT|FW_ASSERT)\w*\s*\(\s*" + hv, after):
             rule = "RTOS-058" if k == "heap" else "RTOS-022"
             add(rule, "warn", cm.start(), "Result of {}() stored in '{}' is never checked for NULL (out of FreeRTOS heap).".format(cm.group(2), h))
 
@@ -510,7 +510,7 @@ def check_source(src, cfg, rtos_cfg=None, extra_isr=None):
         for api, at, paren in calls(cf.body(f), list(BLOCKING_ANY)):
             add("RTOS-127", "error", f.body_start + at, "{}() in vApplicationIdleHook - the idle task must never block.".format(api))
     for f in cf.funcs.values():
-        if f.name in cf.isr:
+        if f.name in cf.isr or fatal_handler(f.name, cf.body(f)):
             continue
         for m in re.finditer(r"\b(__disable_irq|__enable_irq|__set_PRIMASK|__set_BASEPRI)\s*\(", cf.body(f)):
             add("RTOS-121", "warn", f.body_start + m.start(), "{}() in RTOS code ('{}') bypasses the kernel's critical-section "
@@ -536,11 +536,6 @@ def check_source(src, cfg, rtos_cfg=None, extra_isr=None):
         if len(fns) > 1:
             add("RTOS-119", "warn", code.find(h), "Stream/message buffer '{}' has several writers ({}) - they allow ONE writer "
                 "and ONE reader unless serialised.".format(h, ", ".join(sorted(fns))))
-    for f in cf.funcs.values():
-        body = cf.body(f)
-        if re.search(r"\bxRingbufferReceive\w*\s*\(", body) and not re.search(r"\bvRingbufferReturnItem\w*\s*\(", body):
-            add("RTOS-122", "warn", f.body_start, "xRingbufferReceive() in '{}' without vRingbufferReturnItem() - the item's "
-                "space is never released.".format(f.name), f.body_end)
     for m in re.finditer(r"\bosMutexNew\s*\(\s*NULL\s*\)", code):
         add("RTOS-123", "warn", m.start(), "osMutexNew(NULL): default attributes are non-recursive without priority inheritance "
             "by the CMSIS spec - pass attr_bits = osMutexPrioInherit explicitly.")
@@ -549,16 +544,8 @@ def check_source(src, cfg, rtos_cfg=None, extra_isr=None):
     for m in re.finditer(r"\bosDelayUntil\s*\(\s*\d+\s*\)", code):
         add("RTOS-123", "warn", m.start(), "osDelayUntil() takes an ABSOLUTE tick count - use osKernelGetTickCount() + period.")
     for m in re.finditer(r"\bvTaskDelete\s*\(\s*(?!NULL\b|0\b)([^)\s]+)\s*\)", code):
-        add("RTOS-124", "info" if not cf.is_esp else "warn", m.start(), "vTaskDelete({}) deletes ANOTHER task - its held mutexes and "
-            "heap are not released{}; prefer signalling it to clean up and self-delete.".format(
-                m.group(1), " and on SMP it may be running on the other core" if cf.is_esp else ""))
-    if cf.is_esp:
-        for m in re.finditer(r"\bvTaskStartScheduler\s*\(", code):
-            add("RTOS-125", "error", m.start(), "vTaskStartScheduler() in an ESP-IDF project - the scheduler is already running "
-                "when app_main() is called.")
-        for m in re.finditer(r"\b(portDISABLE_INTERRUPTS|taskDISABLE_INTERRUPTS)\s*\(", code):
-            add("RTOS-112", "warn", m.start(), "{}() only affects the current core on ESP-IDF SMP - not mutual exclusion; use "
-                "portENTER_CRITICAL(&spinlock).".format(m.group(1)))
+        add("RTOS-124", "info", m.start(), "vTaskDelete({}) deletes ANOTHER task - its held mutexes and "
+            "heap are not released; prefer signalling it to clean up and self-delete.".format(m.group(1)))
     for m in re.finditer(r"/\s*portTICK_(PERIOD|RATE)_MS\b", code):
         add("RTOS-102", "info", m.start(), "Division by portTICK_PERIOD_MS truncates (and is 0 above 1 kHz) - use pdMS_TO_TICKS().")
 
@@ -585,18 +572,7 @@ def check_source(src, cfg, rtos_cfg=None, extra_isr=None):
         for m in re.finditer(r"\b" + old + r"\b", code):
             add("RTOS-101", "info", m.start(), "{} is deprecated - use {}.".format(old, new))
             break
-    if cf.is_esp:
-        for m in re.finditer(r"\bportMUX_TYPE\s+(\w+)\s*;", code):
-            if re.search(r"\bextern\b", code[code.rfind("\n", 0, m.start()) + 1:m.start()]):
-                continue  # declaration in a header; defined (and initialised) elsewhere
-            add("RTOS-110", "error", m.start(), "portMUX_TYPE '{}' not initialised - use = portMUX_INITIALIZER_UNLOCKED.".format(m.group(1)))
-        for m in re.finditer(r"^[ \t]*(?!static\b)portMUX_TYPE\s+(\w+)", code, re.M):
-            if cf.func_at(m.start()):
-                add("RTOS-110", "error", m.start(), "portMUX_TYPE '{}' is a local - spinlocks must be static/global "
-                    "(shared by all users).".format(m.group(1)))
-        for m in re.finditer(r"\bportENTER_CRITICAL\s*\(\s*\)", code):
-            add("RTOS-110", "error", m.start(), "ESP-IDF portENTER_CRITICAL() needs a spinlock argument: portENTER_CRITICAL(&mux).")
-    return drop_suppressed(src, out)
+    return out
 
 
 # ------------------------------------------------------------------ project-level rules
@@ -710,8 +686,7 @@ def check_project(proj, cfg, sources):
                 srcs[p] = f.read()
         except OSError:
             pass
-    is_esp = os.path.isfile(os.path.join(proj, "sdkconfig")) or (cfg.get("family") == "esp32")
-    uses_rtos = any(re.search(r"\b(xTaskCreate|osThreadNew|vTaskStartScheduler|osKernelStart|xTaskCreatePinnedToCore)\b", s)
+    uses_rtos = any(re.search(r"\b(xTaskCreate|osThreadNew|vTaskStartScheduler|osKernelStart)\b", s)
                     for s in srcs.values())
     if not uses_rtos:
         return out, rc
@@ -719,7 +694,7 @@ def check_project(proj, cfg, sources):
     def add(path, rule, sev, line, msg):
         out.append((rel(path, proj) if path else "(project)", Finding(rule, sev, line, line, msg)))
 
-    if cfg_path and not is_esp:
+    if cfg_path:
         text, raw = rc["_text"], rc["_raw"]
         ln = lambda key: next((i + 1 for i, l in enumerate(text.splitlines()) if re.search(r"#\s*define\s+" + key + r"\b", l)), 1)  # noqa: E731
         if "configASSERT" not in text:
@@ -831,21 +806,6 @@ def check_project(proj, cfg, sources):
             if len(users) > 0 and cfg.get("family") in ("stm32", "samv71", None):
                 add(cfg_path, "RTOS-107", "warn", 1, "newlib functions (printf/malloc/strtok...) are used from tasks but "
                     "configUSE_NEWLIB_REENTRANT is not 1 - not thread-safe (or provide newlib lock hooks).")
-    # ESP-IDF: default 100 Hz tick turns small pdMS_TO_TICKS() into 0
-    if is_esp:
-        hz = None
-        try:
-            with open(os.path.join(proj, "sdkconfig"), "r", encoding="utf-8", errors="replace") as f:
-                m = re.search(r"^CONFIG_FREERTOS_HZ=(\d+)", f.read(), re.M)
-                hz = int(m.group(1)) if m else None
-        except OSError:
-            pass
-        if hz and hz < 1000:
-            for p, s in srcs.items():
-                for m in re.finditer(r"\bpdMS_TO_TICKS\s*\(\s*(\d+)\s*\)", s):
-                    if int(m.group(1)) * hz // 1000 == 0:
-                        add(p, "RTOS-115", "warn", s.count("\n", 0, m.start()) + 1, "pdMS_TO_TICKS({}) is 0 ticks at "
-                            "CONFIG_FREERTOS_HZ={} - no delay/timeout.".format(m.group(1), hz))
     # heap_1 never frees
     heap1 = [p for p in find_files(proj, names={"heap_1.c"})]
     if heap1:
@@ -857,7 +817,7 @@ def check_project(proj, cfg, sources):
                 break
     # STM32 HAL timebase must not be SysTick under FreeRTOS
     stm32 = cfg.get("family") == "stm32" or any(re.search(r"\bHAL_Init\s*\(", s) for s in srcs.values())
-    if stm32 and not is_esp and not any(find_files(proj, names=None, exts=("hal_timebase_tim.c",))):
+    if stm32 and not any(find_files(proj, names=None, exts=("hal_timebase_tim.c",))):
         if any(re.search(r"\bHAL_IncTick\s*\(", s) and re.search(r"\bSysTick_Handler\b", s) for s in srcs.values()):
             add(None, "RTOS-106", "warn", 1, "STM32 HAL timebase appears to be SysTick while FreeRTOS uses SysTick - select a TIMx "
                 "timebase in CubeMX (SYS > Timebase Source) so HAL_Delay/timeouts work and the kernel tick is not disturbed.")
@@ -908,8 +868,38 @@ def check_file(path, cfg, changed="git", rtos_cfg=None, extra_isr=None):
     return [x for x in findings if x.touches(changed)], [x for x in findings if not x.touches(changed)]
 
 
-def project_sources(proj, cfg):
-    return [p for p in find_files(proj, exts=(".c", ".cpp", ".cc")) if not is_protected(rel(p, proj), cfg)]
+def build_scope(proj, cfg):
+    """(TU paths, include/TU dirs) from compile_commands.json, or None. Files outside the build are not analysed."""
+    import json
+    from build_info import norm_args, split_cmd
+    from fwlib import find_compile_commands
+    cc = find_compile_commands(proj, cfg)
+    try:
+        with open(cc, "r", encoding="utf-8") as f:
+            db = json.load(f)
+    except (TypeError, OSError, ValueError):
+        return None
+    norm = lambda x: os.path.normcase(os.path.normpath(x))  # noqa: E731
+    tus, dirs = set(), set()
+    for e in db:
+        d = e.get("directory", ".")
+        tus.add(norm(os.path.join(d, e.get("file", ""))))
+        dirs.update(norm(i) for i in norm_args(split_cmd(e), d)["includes"])
+    dirs.update(os.path.dirname(t) for t in tus)
+    return (tus, dirs) if tus else None
+
+
+def in_scope(path, scope):
+    if scope is None:
+        return True
+    n = os.path.normcase(os.path.normpath(os.path.abspath(path)))
+    return os.path.dirname(n) in scope[1] if n.endswith((".h", ".hpp", ".hh")) else n in scope[0]
+
+
+def project_sources(proj, cfg, scope=False):
+    scope = build_scope(proj, cfg) if scope is False else scope
+    return [p for p in find_files(proj, exts=(".c", ".cpp", ".cc"))
+            if not is_protected(rel(p, proj), cfg) and in_scope(p, scope)]
 
 
 def main():

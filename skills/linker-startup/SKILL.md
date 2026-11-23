@@ -1,6 +1,6 @@
 ---
 name: linker-startup
-description: GNU ld linker scripts, startup code and memory layout for bare-metal MCUs - vector table, reset handler, .data/.bss init, stack/heap, VMA vs LMA, placing code in RAM, noinit/retained sections, multiple RAM regions, bootloader + application layouts and VTOR relocation. Use when editing *.ld / startup files, adding a bootloader, fixing "region overflowed" or boot-time crashes.
+description: GNU ld linker scripts, startup code and memory layout for bare-metal MCUs - vector table, reset handler, .data/.bss init, stack/heap, VMA vs LMA, placing code in RAM, noinit/retained sections, multiple RAM regions and VTOR relocation. Use when editing *.ld / startup files, fixing "region overflowed" or boot-time crashes.
 ---
 
 # Linker scripts and startup code
@@ -99,22 +99,11 @@ Caveats: compile the startup file with `-fno-tree-loop-distribute-patterns` (or 
 - **Function in RAM** (flash erase routines, fast ISRs): `__attribute__((section(".ramfunc"), noinline, long_call))`. Everything it calls must also be in RAM.
 - **Variable in a specific RAM** (CCM/DTCM/SRAM2): add a MEMORY region and an output section `> CCMRAM`; if initialised, it needs its own copy loop (`AT> FLASH` + symbols). CCM is often not DMA-accessible.
 - **Retained/noinit data** for reset reasons or crash logs: `__attribute__((section(".noinit")))` + a magic word + CRC to detect garbage after power-on.
-- **Bootloader + app**: split FLASH into two regions in two linker scripts. The app's vector table starts at its own origin; the bootloader jumps with:
-  ```c
-  uint32_t *app = (uint32_t *)APP_BASE;
-  __disable_irq();
-  /* deinit peripherals, SysTick->CTRL = 0, clear NVIC enables & pendings */
-  SCB->VTOR = APP_BASE;
-  __set_MSP(app[0]);
-  __DSB(); __ISB();
-  ((void (*)(void))app[1])();
-  ```
-  The app must not reset VTOR back to 0x08000000 in SystemInit (check `VECT_TAB_OFFSET`/`USER_VECT_TAB_ADDRESS`).
+- **Application at an offset** (code starts after reserved flash): set the FLASH origin in the linker script and `SCB->VTOR` to the same address (`VECT_TAB_OFFSET`/`USER_VECT_TAB_ADDRESS` on STM32).
 - **Firmware header/version/CRC** at a fixed offset: dedicated `KEEP` section right after the vector table; patch CRC post-link with a script (objcopy + python).
 
-## Diagnosing
+## Diagnosing build and layout problems
 - `region 'FLASH' overflowed by N bytes` -> see the `memory-footprint` skill.
-- Crash before main: step `Reset_Handler` in GDB; check `_sidata`/`_sdata` symbols (`arm-none-eabi-nm -n app.elf | grep -E "_s|_e"`), MSP value in vector[0], and that the vector table address matches VTOR.
 - Inspect sections: `arm-none-eabi-objdump -h app.elf` (look at VMA/LMA columns), `readelf -S`, `readelf -l` (program headers).
 - Globals with garbage initial values -> `.data` copy loop missing/wrong, or the section is not listed inside `.data`.
 - C++ static constructors not running -> `__libc_init_array` not called or `.init_array` not `KEEP`ed.

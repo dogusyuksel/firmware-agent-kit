@@ -8,12 +8,13 @@
 
 import os
 import sys
+import zlib
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "tools"))
 from fwlib import (git_changed_lines, is_protected, load_config, post_tool_context,  # noqa: E402
                    project_dir, read_input, rel)
 from fw_lint import lint_file  # noqa: E402
-from rtos_check import cached_isr_map, load_rtos_config  # noqa: E402
+from rtos_check import _cache, _store, cached_isr_map, load_rtos_config  # noqa: E402
 from fwfmt import format_file  # noqa: E402
 
 MAX_NEW = 12
@@ -88,6 +89,15 @@ def main():
     out += ["  WARN  " + str(f) for f in warns[: max(0, MAX_NEW - len(errors))]]
     if len(new) > MAX_NEW:
         out.append("  ... {} more on edited lines".format(len(new) - MAX_NEW))
+    if old:
+        key = "reported:" + str(payload.get("session_id") or "")
+        seen = _cache(proj, key, None) or {}
+        digest = str(zlib.crc32("\n".join(sorted(f.rule + f.msg for f in old)).encode("utf-8")))
+        if seen.get(relpath) == digest:
+            old = []        # already listed earlier in this session - do not repeat (tokens)
+        else:
+            seen[relpath] = digest
+            _store(proj, key, seen)
     if old:
         out.append("  {} pre-existing finding(s) on lines you did not touch - do NOT fix unless asked; list them "
                    "under 'Noticed (not changed)' in your reply:".format(len(old)))

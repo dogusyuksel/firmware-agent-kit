@@ -1,13 +1,13 @@
 ---
 name: build-systems
-description: Read, understand and modify firmware build systems - CMake (toolchain files, presets, targets, generator expressions), GNU Make (generated STM32Cube Makefiles, recursive makes), ESP-IDF component CMake, MPLAB/Harmony and CubeIDE projects, compile_commands.json, linker flags and map files. Use when a build fails, flags/defines/include paths must be found or changed, a file must be added to the build, or a new build is set up.
+description: Read, understand and modify firmware build systems - CMake (toolchain files, presets, targets, generator expressions), GNU Make (generated STM32Cube Makefiles, recursive makes), MPLAB/Harmony and CubeIDE projects, compile_commands.json, linker flags and map files. Use when a build fails, flags/defines/include paths must be found or changed, a file must be added to the build, or a new build is set up.
 ---
 
 # Firmware build systems
 
 ## Start cheap
 1. `python <kit>/tools/build_info.py` - compiler, arch flags, defines, include dirs, source dirs, linker script from `compile_commands.json` in ~30 lines. `--file src/x.c` gives the exact flags of one TU.
-2. No compile DB? Generate one (CMake `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`, ESP-IDF `idf.py reconfigure`, Make `bear -- make`). Do not read whole generated Makefiles/CMake caches.
+2. No compile DB? Generate one (CMake `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`, Make `bear -- make`). Do not read whole generated Makefiles/CMake caches.
 3. Then read only the relevant `CMakeLists.txt` / Makefile section (Grep for the target or variable).
 
 ## CMake for cross builds
@@ -40,10 +40,6 @@ add_custom_command(TARGET app POST_BUILD COMMAND ${CMAKE_OBJCOPY} -O binary $<TA
 - Key variables: `C_SOURCES`, `ASM_SOURCES`, `C_INCLUDES`, `C_DEFS`, `MCU`, `LDSCRIPT`, `OPT`. Add files by appending to these lists in the same style.
 - Debug a Makefile: `make -n` (dry run), `make -p | grep VAR` (database), `make V=1`/`VERBOSE=1`.
 - Header dependency tracking: `-MMD -MP` and `-include $(DEPS)`; missing it causes stale builds.
-
-## ESP-IDF
-- Each component: `idf_component_register(SRCS "a.c" "b.c" INCLUDE_DIRS "include" REQUIRES driver freertos PRIV_REQUIRES esp_timer)`. "Undefined reference" across components is usually a missing `REQUIRES`.
-- Global options via Kconfig/sdkconfig, not compiler flags. Extra flags: `target_compile_options(${COMPONENT_LIB} PRIVATE ...)`.
 
 ## Microchip SAMV71
 - MPLAB X/Harmony: `nbproject/configurations.xml` + generated Makefiles - prefer exporting to CMake or using the DFP headers + startup with your own CMake. Keep `config/default/` generated code untouched.
